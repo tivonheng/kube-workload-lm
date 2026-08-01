@@ -93,6 +93,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 		}
 	}
 
+	// Once a prior scheduled downscale is represented by a snapshot, a live
+	// replica count above the target is accepted as an external override. Clear
+	// the snapshot so the accepted replica count is not restored or overwritten.
+	if scheduledDown && !currentState.ScaleDownSkipped && currentState.ReplicaSnapshot != nil && live.CurrentReplicas > selected.Replicas.ScheduledDown {
+		currentState.ScaleDownSkipped = true
+		currentState.ScaleDownSkipReason = lifecycle.ReasonScaleDownSkippedReplicaOverride
+		currentState.ReplicaSnapshot = nil
+		document.States[current.Key()] = currentState
+		if err := r.save(ctx, document, current.Key(), "mark scale-down-skipped:replica-override"); err != nil {
+			return lifecycle.Decision{}, err
+		}
+	}
+
 	var snapshotReplicas *int32
 	if currentState.ReplicaSnapshot != nil {
 		value := currentState.ReplicaSnapshot.Replicas
@@ -103,7 +116,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 		CurrentReplicas: live.CurrentReplicas, SnapshotReplicas: snapshotReplicas,
 		ScheduledDown: scheduledDown, ScheduledWindowName: windowName,
 		ScheduledTarget: selected.Replicas.ScheduledDown, ExpiredTarget: selected.Replicas.Expired,
-		ScaleDownSkipped: currentState.ScaleDownSkipped,
+		ScaleDownSkipped: currentState.ScaleDownSkipped, ScaleDownSkipReason: currentState.ScaleDownSkipReason,
 	})
 	if err := r.applyDecision(ctx, live, decision, document, currentState, identityChanged, now); err != nil {
 		return decision, err
@@ -134,6 +147,7 @@ func reconcileIdentity(previous state.WorkloadState, current workload.Workload, 
 		next.WindowEntryRevision = previous.WindowEntryRevision
 		next.WindowInstanceID = previous.WindowInstanceID
 		next.ScaleDownSkipped = previous.ScaleDownSkipped
+		next.ScaleDownSkipReason = previous.ScaleDownSkipReason
 	}
 	return next, !sameIdentity
 }
@@ -159,6 +173,7 @@ func reconcileWindowCycle(current state.WorkloadState, windowInstanceID string, 
 		current.WindowEntryRevision = ""
 		current.WindowInstanceID = ""
 		current.ScaleDownSkipped = false
+		current.ScaleDownSkipReason = ""
 	}
 	return current
 }
@@ -220,6 +235,7 @@ func (r *Reconciler) handleRedeployDuringWindow(ctx context.Context, document st
 	}
 
 	current.ScaleDownSkipped = true
+	current.ScaleDownSkipReason = lifecycle.ReasonScaleDownSkipped
 	document.States[key] = current
 	if err := r.save(ctx, document, key, "mark scale-down-skipped"); err != nil {
 		return current, err

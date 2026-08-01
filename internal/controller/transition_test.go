@@ -154,7 +154,7 @@ func TestSnapshotSaveFailurePreventsDownscale(t *testing.T) {
 	}
 }
 
-func TestDownscaleFailureRetainsOriginalSnapshotAcrossRetry(t *testing.T) {
+func TestFailedDownscaleThenHigherLiveReplicaIsAcceptedAsOverride(t *testing.T) {
 	reconciler, store, scale, _ := newHarness(t, state.NewDocument(), 5)
 	scale.failUpdate = errors.New("conflict")
 	if _, err := reconciler.Reconcile(context.Background(), testWorkload("uid-1", "api:v1"), testPolicy(true, 2)); err == nil {
@@ -163,14 +163,19 @@ func TestDownscaleFailureRetainsOriginalSnapshotAcrossRetry(t *testing.T) {
 	if got := store.document.States["Deployment/team-a/api"].ReplicaSnapshot; got == nil || got.Replicas != 5 {
 		t.Fatalf("snapshot after failure=%#v", got)
 	}
+
 	scale.failUpdate = nil
-	scale.replicas = 8 // external change while downscaled
-	if _, err := reconciler.Reconcile(context.Background(), testWorkload("uid-1", "api:v1"), testPolicy(true, 2)); err != nil {
+	scale.replicas = 8
+	decision, err := reconciler.Reconcile(context.Background(), testWorkload("uid-1", "api:v1"), testPolicy(true, 2))
+	if err != nil {
 		t.Fatal(err)
 	}
-	got := store.document.States["Deployment/team-a/api"].ReplicaSnapshot
-	if got == nil || got.Replicas != 5 || scale.replicas != 2 {
-		t.Fatalf("snapshot=%#v replicas=%d", got, scale.replicas)
+	got := store.document.States["Deployment/team-a/api"]
+	if decision.Reason != lifecycle.ReasonScaleDownSkippedReplicaOverride || decision.ShouldScale || scale.replicas != 8 {
+		t.Fatalf("decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	if got.ReplicaSnapshot != nil || !got.ScaleDownSkipped || got.ScaleDownSkipReason != lifecycle.ReasonScaleDownSkippedReplicaOverride {
+		t.Fatalf("override state=%#v", got)
 	}
 }
 
@@ -417,4 +422,149 @@ func TestExpiredRevisionStaysDownUntilNewRevisionRestoresSnapshot(t *testing.T) 
 	if store.document.States[current.Key()].ReplicaSnapshot != nil {
 		t.Fatal("successful new-revision restore retained snapshot")
 	}
+}
+
+func TestInitialScheduledDownCapturesSnapshotAndWindowRevision(t *testing.T) {
+	current := testWorkload("uid-initial-down", "api:v1")
+	reconciler, store, scale, _ := newHarness(t, state.NewDocument(), 5)
+
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicy(true, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := store.document.States[current.Key()]
+	if decision.Reason != lifecycle.ReasonScaleDownWindow+":always" || scale.replicas != 2 {
+		t.Fatalf("decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	if persisted.ReplicaSnapshot == nil || persisted.ReplicaSnapshot.Replicas != 5 {
+		t.Fatalf("snapshot=%#v, want captured replicas 5", persisted.ReplicaSnapshot)
+	}
+	if persisted.WindowEntryRevision == "" || persisted.WindowEntryRevision != persisted.RevisionHash {
+		t.Fatalf("window entry revision=%q revision=%q", persisted.WindowEntryRevision, persisted.RevisionHash)
+	}
+	if persisted.ScaleDownSkipped || persisted.ScaleDownSkipReason != "" {
+		t.Fatalf("unexpected initial skip state: %#v", persisted)
+	}
+}
+
+func TestExternalReplicaOverrideSkipsSameWindowAndSurvivesRestart(t *testing.T) {
+	store, scale, ops, current, selected := prepareReplicaOverride(t)
+	persisted := store.document.States[current.Key()]
+	if !persisted.ScaleDownSkipped || persisted.ScaleDownSkipReason != lifecycle.ReasonScaleDownSkippedReplicaOverride {
+		t.Fatalf("override state=%#v", persisted)
+	}
+	if persisted.ReplicaSnapshot != nil {
+		t.Fatalf("override retained snapshot=%#v", persisted.ReplicaSnapshot)
+	}
+
+	beforeRestart := len(*ops)
+	restarted, err := NewReconciler(store, scale, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, fixedClock{testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := restarted.Reconcile(context.Background(), current, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != lifecycle.ReasonScaleDownSkippedReplicaOverride || decision.ShouldScale || scale.replicas != 4 {
+		t.Fatalf("restart decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	if strings.Contains(strings.Join((*ops)[beforeRestart:], ","), "update:") {
+		t.Fatalf("restart performed scale write: %v", (*ops)[beforeRestart:])
+	}
+}
+
+func TestReplicaOverrideClearsAtWindowBoundaryAndSchedulingResumes(t *testing.T) {
+	t.Run("outside window", func(t *testing.T) {
+		store, scale, ops, current, selected := prepareReplicaOverride(t)
+		decision, err := (&Reconciler{store: store, scale: scale, hpa: fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, clock: fixedClock{testNow}}).
+			Reconcile(context.Background(), current, testPolicy(false, 2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleared := store.document.States[current.Key()]
+		if decision.Reason != lifecycle.ReasonActiveWindow || cleared.ScaleDownSkipped || cleared.ScaleDownSkipReason != "" || cleared.WindowEntryRevision != "" || cleared.WindowInstanceID != "" {
+			t.Fatalf("outside-window decision=%#v state=%#v", decision, cleared)
+		}
+
+		decision, err = (&Reconciler{store: store, scale: scale, hpa: fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, clock: fixedClock{testNow}}).
+			Reconcile(context.Background(), current, selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resumed := store.document.States[current.Key()]
+		if decision.Reason != lifecycle.ReasonScaleDownWindow+":always" || scale.replicas != 2 || resumed.ReplicaSnapshot == nil || resumed.ReplicaSnapshot.Replicas != 4 {
+			t.Fatalf("resumed decision=%#v replicas=%d state=%#v", decision, scale.replicas, resumed)
+		}
+	})
+
+	t.Run("new window instance", func(t *testing.T) {
+		store, scale, ops, current, selected := prepareReplicaOverride(t)
+		oldInstance := store.document.States[current.Key()].WindowInstanceID
+		nextWindow, err := NewReconciler(store, scale, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, fixedClock{testNow.Add(24 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision, err := nextWindow.Reconcile(context.Background(), current, selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resumed := store.document.States[current.Key()]
+		if decision.Reason != lifecycle.ReasonScaleDownWindow+":always" || scale.replicas != 2 {
+			t.Fatalf("new-window decision=%#v replicas=%d", decision, scale.replicas)
+		}
+		if resumed.ScaleDownSkipped || resumed.ScaleDownSkipReason != "" || resumed.WindowInstanceID == oldInstance || resumed.ReplicaSnapshot == nil || resumed.ReplicaSnapshot.Replicas != 4 {
+			t.Fatalf("old instance=%q resumed state=%#v", oldInstance, resumed)
+		}
+	})
+}
+
+func TestRedeploySkipRetainsRedeployReason(t *testing.T) {
+	current := testWorkload("uid-redeploy", "api:v1")
+	selected := testPolicy(true, 2)
+	reconciler, store, scale, ops := newHarness(t, state.NewDocument(), 5)
+	if _, err := reconciler.Reconcile(context.Background(), current, selected); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeRedeploy := len(*ops)
+	decision, err := reconciler.Reconcile(context.Background(), testWorkload(current.UID, "api:v2"), selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := store.document.States[current.Key()]
+	if decision.Reason != lifecycle.ReasonScaleDownSkipped || decision.ShouldScale || scale.replicas != 5 {
+		t.Fatalf("redeploy decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	if !persisted.ScaleDownSkipped || persisted.ScaleDownSkipReason != lifecycle.ReasonScaleDownSkipped || persisted.ReplicaSnapshot != nil {
+		t.Fatalf("redeploy state=%#v", persisted)
+	}
+	updates := strings.Join((*ops)[beforeRedeploy:], ",")
+	if !strings.Contains(updates, "update:5") || strings.Contains(updates, "update:2") {
+		t.Fatalf("redeploy scale operations=%v", (*ops)[beforeRedeploy:])
+	}
+}
+
+func prepareReplicaOverride(t *testing.T) (*memoryStore, *fakeScale, *[]string, workload.Workload, policy.Policy) {
+	t.Helper()
+	current := testWorkload("uid-override", "api:v1")
+	selected := testPolicy(true, 2)
+	reconciler, store, scale, ops := newHarness(t, state.NewDocument(), 5)
+	if _, err := reconciler.Reconcile(context.Background(), current, selected); err != nil {
+		t.Fatal(err)
+	}
+
+	scale.replicas = 4
+	beforeOverride := len(*ops)
+	decision, err := reconciler.Reconcile(context.Background(), current, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != lifecycle.ReasonScaleDownSkippedReplicaOverride || decision.ShouldScale || decision.DesiredReplicas != 4 || scale.replicas != 4 {
+		t.Fatalf("override decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	if strings.Contains(strings.Join((*ops)[beforeOverride:], ","), "update:") {
+		t.Fatalf("override performed scale write: %v", (*ops)[beforeOverride:])
+	}
+	return store, scale, ops, current, selected
 }

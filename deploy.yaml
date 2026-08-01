@@ -136,6 +136,7 @@ data:
               - StatefulSet
             namePatterns:
               - ".*pfb\\d+"
+              - "staging-.*"
           lifecycle:
             maxAge: 48h
             revision:
@@ -153,7 +154,6 @@ data:
               - name: weekend-all-day
                 startDays: [SAT, SUN]
                 allDay: true
-          
 kind: ConfigMap
 metadata:
   labels:
@@ -236,7 +236,7 @@ spec:
           value: workload-lifecycle-controller
         - name: OBSERVABILITY_ADDR
           value: :8080
-        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:bb3bcdb
+        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:c4173ed
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3

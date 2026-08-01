@@ -46,9 +46,13 @@ type WorkloadState struct {
 	// 用于区分同名窗口的不同周期（如每日夜间窗口的周一实例和周二实例）。
 	WindowInstanceID string `json:"windowInstanceID,omitempty"`
 
-	// ScaleDownSkipped 标记该 Workload 在当前窗口周期内因 Revision 变化而跳过缩容。
-	// 仅在 WindowInstanceID 对应的周期内有效。
+	// ScaleDownSkipped marks this workload as exempt from scheduled downscaling
+	// for the current window instance.
 	ScaleDownSkipped bool `json:"scaleDownSkipped,omitempty"`
+
+	// ScaleDownSkipReason records why scheduled downscaling was skipped so the
+	// decision remains observable across reconciles and controller restarts.
+	ScaleDownSkipReason string `json:"scaleDownSkipReason,omitempty"`
 }
 
 func (s WorkloadState) Key() string {

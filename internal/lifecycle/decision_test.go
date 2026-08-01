@@ -19,6 +19,10 @@ func TestDecideReplicaStateMachine(t *testing.T) {
 		{"restore", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 0, SnapshotReplicas: &snapshot}, Decision{3, ReasonRestoreReplicas, false, true, true}},
 		{"active-preserves", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 5}, Decision{5, ReasonActiveWindow, false, false, false}},
 		{"down-never-scales-up", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 1, ScheduledDown: true, ScheduledTarget: 2}, Decision{1, ReasonScaleDownWindow, true, false, false}},
+		{"legacy-skip-falls-back-to-redeploy", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 4, ScheduledDown: true, ScaleDownSkipped: true}, Decision{4, ReasonScaleDownSkipped, false, false, false}},
+		{"replica-override-skip-retains-reason", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 4, ScheduledDown: true, ScaleDownSkipped: true, ScaleDownSkipReason: ReasonScaleDownSkippedReplicaOverride}, Decision{4, ReasonScaleDownSkippedReplicaOverride, false, false, false}},
+		{"expired-precedes-redeploy-skip", DecisionInput{Now: now, FirstSeenAt: now.Add(-73 * time.Hour), MaxAge: 72 * time.Hour, CurrentReplicas: 4, ScheduledDown: true, ExpiredTarget: 0, ScaleDownSkipped: true, ScaleDownSkipReason: ReasonScaleDownSkipped}, Decision{0, ReasonRevisionExpired, true, true, false}},
+		{"expired-precedes-replica-override-skip", DecisionInput{Now: now, FirstSeenAt: now.Add(-73 * time.Hour), MaxAge: 72 * time.Hour, CurrentReplicas: 4, ScheduledDown: true, ExpiredTarget: 0, ScaleDownSkipped: true, ScaleDownSkipReason: ReasonScaleDownSkippedReplicaOverride}, Decision{0, ReasonRevisionExpired, true, true, false}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
