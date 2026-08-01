@@ -236,7 +236,7 @@ spec:
           value: workload-lifecycle-controller
         - name: OBSERVABILITY_ADDR
           value: :8080
-        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:c4173ed
+        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:54f1bde
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3
