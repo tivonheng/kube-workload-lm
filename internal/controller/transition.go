@@ -77,6 +77,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 		}
 	}
 	currentState = reconcileWindowCycle(currentState, windowInstanceID, scheduledDown)
+
+	// 确保在 downWindow 内始终有 WindowEntryRevision 记录（兼容升级和已缩容场景）
+	if scheduledDown && windowInstanceID != "" && currentState.WindowEntryRevision == "" {
+		currentState.WindowEntryRevision = revision.RevisionHash
+		currentState.WindowInstanceID = windowInstanceID
+	}
 	document.States[current.Key()] = currentState
 
 	// 检测窗口内 Revision 变化
@@ -99,11 +105,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 		ScheduledTarget: selected.Replicas.ScheduledDown, ExpiredTarget: selected.Replicas.Expired,
 		ScaleDownSkipped: currentState.ScaleDownSkipped,
 	})
-	if decision.NeedsSnapshot && scheduledDown && currentState.WindowEntryRevision == "" {
-		currentState.WindowEntryRevision = revision.RevisionHash
-		currentState.WindowInstanceID = windowInstanceID
-		document.States[current.Key()] = currentState
-	}
 	if err := r.applyDecision(ctx, live, decision, document, currentState, identityChanged, now); err != nil {
 		return decision, err
 	}
