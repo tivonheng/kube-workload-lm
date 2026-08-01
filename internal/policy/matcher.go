@@ -13,11 +13,11 @@ type MatchResult struct {
 
 func (result MatchResult) Conflict() bool { return len(result.ConflictNames) > 0 }
 
-func Match(set PolicySet, kind workload.Kind, workloadLabels map[string]string) MatchResult {
+func Match(set PolicySet, kind workload.Kind, name string, workloadLabels map[string]string) MatchResult {
 	var matches []*Policy
 	for index := range set.Policies {
 		candidate := &set.Policies[index]
-		if candidate.Target.matches(kind, workloadLabels) {
+		if candidate.Target.matches(kind, name, workloadLabels) {
 			matches = append(matches, candidate)
 		}
 	}

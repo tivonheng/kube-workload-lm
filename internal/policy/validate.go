@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 
 	"gitlab.glb.osl-nucleus.com/devops/kube-workload-lifecycle-manager/internal/lifecycle"
@@ -78,11 +79,34 @@ func compileTarget(raw *rawTarget) (Target, error) {
 		}
 		seenKinds[kind] = struct{}{}
 	}
-	selector, compiled, err := compileSelector(raw.Selector)
+
+	hasSelector := raw.Selector != nil &&
+		(len(raw.Selector.MatchLabels) > 0 || len(raw.Selector.MatchExpressions) > 0)
+	hasNamePatterns := raw.NamePatterns != nil && len(*raw.NamePatterns) > 0
+
+	if !hasSelector && !hasNamePatterns {
+		return Target{}, fmt.Errorf("at least one of selector or namePatterns must be configured")
+	}
+
+	var selector metav1.LabelSelector
+	var compiledSelector labels.Selector
+	if hasSelector {
+		var err error
+		selector, compiledSelector, err = compileSelector(raw.Selector)
+		if err != nil {
+			return Target{}, err
+		}
+	}
+
+	compiledPatterns, namePatterns, err := compileNamePatterns(raw.NamePatterns)
 	if err != nil {
 		return Target{}, err
 	}
-	return Target{Kinds: kinds, Selector: selector, compiledSelector: compiled}, nil
+
+	return Target{
+		Kinds: kinds, Selector: selector, compiledSelector: compiledSelector,
+		NamePatterns: namePatterns, compiledPatterns: compiledPatterns,
+	}, nil
 }
 
 func compileSelector(raw *rawSelector) (metav1.LabelSelector, labels.Selector, error) {
@@ -118,6 +142,27 @@ func compileSelector(raw *rawSelector) (metav1.LabelSelector, labels.Selector, e
 		return metav1.LabelSelector{}, nil, fmt.Errorf("invalid selector: %w", err)
 	}
 	return selector, compiled, nil
+}
+
+func compileNamePatterns(raw *[]string) ([]*regexp.Regexp, []string, error) {
+	if raw == nil || len(*raw) == 0 {
+		return nil, nil, nil
+	}
+	patterns := make([]string, 0, len(*raw))
+	compiled := make([]*regexp.Regexp, 0, len(*raw))
+	for i, pattern := range *raw {
+		if pattern == "" {
+			return nil, nil, fmt.Errorf("namePatterns[%d]: pattern must be non-empty", i)
+		}
+		anchored := "^(?:" + pattern + ")$"
+		re, err := regexp.Compile(anchored)
+		if err != nil {
+			return nil, nil, fmt.Errorf("namePatterns[%d] %q: %w", i, pattern, err)
+		}
+		patterns = append(patterns, pattern)
+		compiled = append(compiled, re)
+	}
+	return compiled, patterns, nil
 }
 
 func compileLifecycle(raw *rawLifecycle) (Lifecycle, error) {

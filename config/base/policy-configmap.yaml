@@ -64,3 +64,27 @@ data:
                 startDays: [MON, TUE, WED, THU, FRI, SAT, SUN]
                 start: "22:00"
                 end: "08:00"
+        # Name-based matching: target workloads by naming convention without labels.
+        - name: name-pattern-match
+          priority: 50
+          target:
+            kinds:
+              - Deployment
+              - StatefulSet
+            namePatterns:
+              - "pfb\\d+"
+              - "staging-.*"
+          lifecycle:
+            maxAge: 48h
+            revision:
+              source: ContainerImages
+          replicas:
+            scheduledDown: 0
+            expired: 0
+          schedule:
+            timeZone: Asia/Shanghai
+            downWindows:
+              - name: weekday-early-morning
+                startDays: [MON, TUE, WED, THU, FRI]
+                start: "00:00"
+                end: "08:00"

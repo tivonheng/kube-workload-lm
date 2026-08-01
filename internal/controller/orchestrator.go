@@ -192,7 +192,7 @@ func (controller *Controller) reconcileOne(ctx context.Context, current workload
 		controller.handleError(err)
 		return
 	}
-	matched := policy.Match(set, current.Kind, current.Labels)
+	matched := policy.Match(set, current.Kind, current.Name, current.Labels)
 	if matched.Conflict() {
 		err := fmt.Errorf("reconcile %s: %w: %v", current.Key(), ErrPolicyConflict, matched.ConflictNames)
 		controller.observer.ObserveReconcile(ReconcileObservation{Workload: current, Reason: "policy-conflict", Result: "error", Err: err})

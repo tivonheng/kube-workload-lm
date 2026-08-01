@@ -25,8 +25,9 @@ type rawPolicy struct {
 }
 
 type rawTarget struct {
-	Kinds    *[]workload.Kind `yaml:"kinds"`
-	Selector *rawSelector     `yaml:"selector"`
+	Kinds        *[]workload.Kind `yaml:"kinds"`
+	Selector     *rawSelector     `yaml:"selector"`
+	NamePatterns *[]string        `yaml:"namePatterns"`
 }
 
 type rawSelector struct {

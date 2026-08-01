@@ -11,7 +11,7 @@ Workload/HPA watches -> controller -> snapshot transaction -> ConfigMap StateSto
                                       `-> JSON logs, probes, Prometheus metrics
 ```
 
-The controller watches Deployments, StatefulSets, HPAs, and the policy ConfigMap. Events trigger reconciliation and a 30-second full reconciliation closes watch gaps. Policy matching requires both kind and label selector; the unique highest-priority policy wins. A tie at the highest priority is rejected without state or scale mutation. Invalid policy updates are rejected atomically and the last valid policy snapshot remains active.
+The controller watches Deployments, StatefulSets, HPAs, and the policy ConfigMap. Events trigger reconciliation and a 30-second full reconciliation closes watch gaps. Policy matching requires kind plus at least one of label selector or name patterns; the unique highest-priority policy wins. A tie at the highest priority is rejected without state or scale mutation. Invalid policy updates are rejected atomically and the last valid policy snapshot remains active.
 
 Only the elected leader reconciles. Every replica serves HTTP, but `/readyz` succeeds only when that replica is the leader, an initial valid policy exists, and state dependencies loaded successfully.
 
@@ -118,7 +118,26 @@ spec:
         expired: 0
 ```
 
-The complete default-all and named-container examples, including selector and schedule forms, are in `config/base/policy-configmap.yaml`. Label Workloads to opt in; unlabeled Workloads are observed but skipped.
+The complete default-all and named-container examples, including selector and schedule forms, are in `config/base/policy-configmap.yaml`. Label Workloads or use name patterns to opt in; unmatched Workloads are observed but skipped.
+
+### Name pattern matching
+
+Targets support an optional `namePatterns` field containing Go RE2 regular expressions that match Workload names. Each pattern is automatically anchored for full-match semantics: a configured pattern `pfb\d+` matches only names that entirely satisfy the expression (equivalent to `^(?:pfb\d+)$`). At least one of `selector` or `namePatterns` must be present. When both are configured, matching is `kind AND (selector OR namePatterns)`.
+
+```yaml
+# Pure name-based matching without labels
+- name: pfb-workloads
+  priority: 100
+  target:
+    kinds: [Deployment, StatefulSet]
+    namePatterns:
+      - "pfb\\d+"
+      - "staging-.*"
+  lifecycle:
+    maxAge: 72h
+```
+
+An empty name (which should not occur for valid Kubernetes resources) causes all name patterns to evaluate as not matched. Invalid regex syntax or empty pattern strings reject the entire PolicySet update at load time.
 
 ### Timezone and windows
 

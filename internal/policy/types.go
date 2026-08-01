@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"regexp"
 	"time"
 
 	"gitlab.glb.osl-nucleus.com/devops/kube-workload-lifecycle-manager/internal/lifecycle"
@@ -35,6 +36,8 @@ type Target struct {
 	Kinds            []workload.Kind
 	Selector         metav1.LabelSelector
 	compiledSelector labels.Selector
+	NamePatterns     []string
+	compiledPatterns []*regexp.Regexp
 }
 
 type Lifecycle struct {
@@ -52,13 +55,40 @@ type Schedule struct {
 	DownWindows []schedule.Window
 }
 
-func (target Target) matches(kind workload.Kind, workloadLabels map[string]string) bool {
-	kindMatched := false
+func (target Target) matches(kind workload.Kind, name string, workloadLabels map[string]string) bool {
+	if !target.kindMatches(kind) {
+		return false
+	}
+	if target.selectorMatches(workloadLabels) {
+		return true
+	}
+	return target.namePatternMatches(name)
+}
+
+func (target Target) kindMatches(kind workload.Kind) bool {
 	for _, candidate := range target.Kinds {
 		if candidate == kind {
-			kindMatched = true
-			break
+			return true
 		}
 	}
-	return kindMatched && target.compiledSelector.Matches(labels.Set(workloadLabels))
+	return false
+}
+
+func (target Target) selectorMatches(workloadLabels map[string]string) bool {
+	if target.compiledSelector == nil {
+		return false
+	}
+	return target.compiledSelector.Matches(labels.Set(workloadLabels))
+}
+
+func (target Target) namePatternMatches(name string) bool {
+	if name == "" || len(target.compiledPatterns) == 0 {
+		return false
+	}
+	for _, pattern := range target.compiledPatterns {
+		if pattern.MatchString(name) {
+			return true
+		}
+	}
+	return false
 }
