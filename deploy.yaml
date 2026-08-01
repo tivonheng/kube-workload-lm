@@ -128,7 +128,7 @@ data:
     kind: WorkloadLifecyclePolicySet
     spec:
       policies:
-        - name: pfb-workloads
+        - name: pfb-workload
           priority: 50
           target:
             kinds:
@@ -137,7 +137,7 @@ data:
             namePatterns:
               - ".*pfb\\d+"
           lifecycle:
-            maxAge: 72h
+            maxAge: 48h
             revision:
               source: ContainerImages
           replicas:
@@ -153,6 +153,7 @@ data:
               - name: weekend-all-day
                 startDays: [SAT, SUN]
                 allDay: true
+          
 kind: ConfigMap
 metadata:
   labels:
@@ -235,7 +236,7 @@ spec:
           value: workload-lifecycle-controller
         - name: OBSERVABILITY_ADDR
           value: :8080
-        image: 557690602572.dkr.ecr.ap-southeast-1.amazonaws.com/kube-workload-lifecycle-manager:v0.2.0
+        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:bb3bcdb
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3

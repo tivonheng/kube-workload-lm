@@ -11,61 +11,7 @@ data:
     kind: WorkloadLifecyclePolicySet
     spec:
       policies:
-        # containers omitted: every regular container image is revision-significant.
-        - name: default-all-containers
-          priority: 100
-          target:
-            kinds:
-              - Deployment
-              - StatefulSet
-            selector:
-              matchLabels:
-                lifecycle.example.com/policy: all-containers
-          lifecycle:
-            maxAge: 72h
-            revision:
-              source: ContainerImages
-          replicas:
-            scheduledDown: 0
-            expired: 0
-          schedule:
-            timeZone: Asia/Shanghai
-            downWindows:
-              - name: weekday-early-morning
-                startDays: [MON, TUE, WED, THU, FRI]
-                start: "00:00"
-                end: "08:00"
-              - name: weekend-all-day
-                startDays: [SAT, SUN]
-                allDay: true
-        # Optional guidance: name containers to ignore sidecar-only image changes.
-        - name: application-container-only
-          priority: 100
-          target:
-            kinds:
-              - Deployment
-              - StatefulSet
-            selector:
-              matchLabels:
-                lifecycle.example.com/policy: application-only
-          lifecycle:
-            maxAge: 168h
-            revision:
-              source: ContainerImages
-              containers:
-                - app
-          replicas:
-            scheduledDown: 0
-            expired: 0
-          schedule:
-            timeZone: America/Los_Angeles
-            downWindows:
-              - name: nightly-cross-midnight
-                startDays: [MON, TUE, WED, THU, FRI, SAT, SUN]
-                start: "22:00"
-                end: "08:00"
-        # Name-based matching: target workloads by naming convention without labels.
-        - name: name-pattern-match
+        - name: pfb-workload
           priority: 50
           target:
             kinds:
@@ -88,3 +34,7 @@ data:
                 startDays: [MON, TUE, WED, THU, FRI]
                 start: "00:00"
                 end: "08:00"
+              - name: weekend-all-day
+                startDays: [SAT, SUN]
+                allDay: true
+  
