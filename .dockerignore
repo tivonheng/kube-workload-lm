@@ -1,0 +1,6 @@
+.git
+.kiro
+bin
+cover.out
+*.test
+.DS_Store

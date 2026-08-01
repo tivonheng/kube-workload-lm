@@ -1,0 +1,30 @@
+package lifecycle
+
+import (
+	"testing"
+	"time"
+)
+
+func TestDecideReplicaStateMachine(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	snapshot := int32(3)
+	tests := []struct {
+		name  string
+		input DecisionInput
+		want  Decision
+	}{
+		{"expired-precedes-window", DecisionInput{Now: now, FirstSeenAt: now.Add(-73 * time.Hour), MaxAge: 72 * time.Hour, CurrentReplicas: 3, ScheduledDown: true, ScheduledTarget: 1, ExpiredTarget: 0}, Decision{0, ReasonRevisionExpired, true, true, false}},
+		{"scheduled-captures", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 3, ScheduledDown: true, ScheduledWindowName: "night", ScheduledTarget: 0}, Decision{0, ReasonScaleDownWindow + ":night", true, true, false}},
+		{"scheduled-keeps-snapshot", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 1, SnapshotReplicas: &snapshot, ScheduledDown: true, ScheduledTarget: 0}, Decision{0, ReasonScaleDownWindow, false, true, false}},
+		{"restore", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 0, SnapshotReplicas: &snapshot}, Decision{3, ReasonRestoreReplicas, false, true, true}},
+		{"active-preserves", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 5}, Decision{5, ReasonActiveWindow, false, false, false}},
+		{"down-never-scales-up", DecisionInput{Now: now, FirstSeenAt: now, MaxAge: 72 * time.Hour, CurrentReplicas: 1, ScheduledDown: true, ScheduledTarget: 2}, Decision{1, ReasonScaleDownWindow, true, false, false}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := Decide(test.input); got != test.want {
+				t.Fatalf("got %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}

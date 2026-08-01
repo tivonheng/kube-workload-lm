@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workload-lifecycle-controller
+  namespace: lifecycle-system
+rules:
+  # Policy watch is namespace-scoped; state writes are restricted by name.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["workload-lifecycle-state"]
+    verbs: ["update"]
+  # Create cannot be restricted by resourceName; required to recover deleted state.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["workload-lifecycle-controller"]
+    verbs: ["get", "update"]
+  # Create cannot be restricted by resourceName; required for initial election.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
