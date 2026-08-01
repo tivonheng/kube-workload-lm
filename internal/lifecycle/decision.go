@@ -3,10 +3,11 @@ package lifecycle
 import "time"
 
 const (
-	ReasonRevisionExpired = "revision-lifecycle-expired"
-	ReasonScaleDownWindow = "scale-down-window"
-	ReasonRestoreReplicas = "restore-previous-replicas"
-	ReasonActiveWindow    = "active-window"
+	ReasonRevisionExpired  = "revision-lifecycle-expired"
+	ReasonScaleDownSkipped = "scale-down-skipped:redeploy"
+	ReasonScaleDownWindow  = "scale-down-window"
+	ReasonRestoreReplicas  = "restore-previous-replicas"
+	ReasonActiveWindow     = "active-window"
 )
 
 type DecisionInput struct {
@@ -19,6 +20,7 @@ type DecisionInput struct {
 	ScheduledWindowName string
 	ScheduledTarget     int32
 	ExpiredTarget       int32
+	ScaleDownSkipped    bool
 }
 
 type Decision struct {
@@ -32,6 +34,9 @@ type Decision struct {
 func Decide(input DecisionInput) Decision {
 	if !input.Now.Before(input.FirstSeenAt.Add(input.MaxAge)) {
 		return downDecision(input, input.ExpiredTarget, ReasonRevisionExpired)
+	}
+	if input.ScaleDownSkipped && input.ScheduledDown {
+		return Decision{input.CurrentReplicas, ReasonScaleDownSkipped, false, false, false}
 	}
 	if input.ScheduledDown {
 		reason := ReasonScaleDownWindow

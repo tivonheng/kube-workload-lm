@@ -68,6 +68,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 	if err != nil {
 		return lifecycle.Decision{}, fmt.Errorf("evaluate schedule for %s: %w", current.Key(), err)
 	}
+
+	var windowInstanceID string
+	if scheduledDown && windowName != "" {
+		windowInstanceID, err = computeWindowInstanceID(now, selected.Schedule, windowName)
+		if err != nil {
+			return lifecycle.Decision{}, fmt.Errorf("compute window instance ID for %s: %w", current.Key(), err)
+		}
+	}
+	currentState = reconcileWindowCycle(currentState, windowInstanceID, scheduledDown)
+	document.States[current.Key()] = currentState
+
+	// 检测窗口内 Revision 变化
+	if scheduledDown && !currentState.ScaleDownSkipped && currentState.WindowEntryRevision != "" && currentState.WindowEntryRevision != revision.RevisionHash {
+		currentState, err = r.handleRedeployDuringWindow(ctx, document, currentState, live, current.Key())
+		if err != nil {
+			return lifecycle.Decision{}, fmt.Errorf("handle redeploy during window for %s: %w", current.Key(), err)
+		}
+	}
+
 	var snapshotReplicas *int32
 	if currentState.ReplicaSnapshot != nil {
 		value := currentState.ReplicaSnapshot.Replicas
@@ -78,7 +97,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 		CurrentReplicas: live.CurrentReplicas, SnapshotReplicas: snapshotReplicas,
 		ScheduledDown: scheduledDown, ScheduledWindowName: windowName,
 		ScheduledTarget: selected.Replicas.ScheduledDown, ExpiredTarget: selected.Replicas.Expired,
+		ScaleDownSkipped: currentState.ScaleDownSkipped,
 	})
+	if decision.NeedsSnapshot && scheduledDown && currentState.WindowEntryRevision == "" {
+		currentState.WindowEntryRevision = revision.RevisionHash
+		currentState.WindowInstanceID = windowInstanceID
+		document.States[current.Key()] = currentState
+	}
 	if err := r.applyDecision(ctx, live, decision, document, currentState, identityChanged, now); err != nil {
 		return decision, err
 	}
@@ -103,6 +128,12 @@ func reconcileIdentity(previous state.WorkloadState, current workload.Workload, 
 		Revision:    state.Revision{Source: lifecycle.SourceContainerImages, Containers: append([]workload.Container(nil), revision.Containers...)},
 		FirstSeenAt: firstSeen, LastSeenAt: now, ReplicaSnapshot: snapshot,
 	}
+	// Preserve window/skip state when same UID (these are managed by reconcileWindowCycle)
+	if sameUID {
+		next.WindowEntryRevision = previous.WindowEntryRevision
+		next.WindowInstanceID = previous.WindowInstanceID
+		next.ScaleDownSkipped = previous.ScaleDownSkipped
+	}
 	return next, !sameIdentity
 }
 
@@ -111,6 +142,24 @@ func matchSchedule(now time.Time, configured *policy.Schedule) (string, bool, er
 		return "", false, nil
 	}
 	return schedule.Match(now, configured.TimeZone, configured.DownWindows)
+}
+
+func computeWindowInstanceID(now time.Time, configured *policy.Schedule, windowName string) (string, error) {
+	if configured == nil {
+		return "", nil
+	}
+	return schedule.WindowInstanceID(now, configured.TimeZone, windowName, configured.DownWindows)
+}
+
+// reconcileWindowCycle 处理窗口周期边界。
+// 如果当前不在 downWindow 或周期实例变化，清除 skip 相关状态。
+func reconcileWindowCycle(current state.WorkloadState, windowInstanceID string, scheduledDown bool) state.WorkloadState {
+	if !scheduledDown || windowInstanceID != current.WindowInstanceID {
+		current.WindowEntryRevision = ""
+		current.WindowInstanceID = ""
+		current.ScaleDownSkipped = false
+	}
+	return current
 }
 
 func (r *Reconciler) applyDecision(ctx context.Context, live workload.Workload, decision lifecycle.Decision, document state.Document, current state.WorkloadState, identitySaved bool, now time.Time) error {
@@ -154,6 +203,27 @@ func (r *Reconciler) applyDecision(ctx context.Context, live workload.Workload, 
 	}
 	document.States[key] = current
 	return r.save(ctx, document, key, "update workload state")
+}
+
+// handleRedeployDuringWindow 处理窗口内 Revision 变化。
+// 如果存在快照则先恢复，然后标记 ScaleDownSkipped。
+func (r *Reconciler) handleRedeployDuringWindow(ctx context.Context, document state.Document,
+	current state.WorkloadState, live workload.Workload, key string) (state.WorkloadState, error) {
+
+	if current.ReplicaSnapshot != nil {
+		// 恢复到快照副本数
+		if err := r.updateScale(ctx, live, current.ReplicaSnapshot.Replicas, lifecycle.ReasonScaleDownSkipped); err != nil {
+			return current, err // 恢复失败，保留 snapshot，不标记 skip
+		}
+		current.ReplicaSnapshot = nil
+	}
+
+	current.ScaleDownSkipped = true
+	document.States[key] = current
+	if err := r.save(ctx, document, key, "mark scale-down-skipped"); err != nil {
+		return current, err
+	}
+	return current, nil
 }
 
 func (r *Reconciler) save(ctx context.Context, document state.Document, key, operation string) error {

@@ -18,7 +18,7 @@ data:
               - Deployment
               - StatefulSet
             namePatterns:
-              - "pfb\\d+"
+              - ".*pfb\\d+"
               - "staging-.*"
           lifecycle:
             maxAge: 48h

@@ -36,6 +36,19 @@ type WorkloadState struct {
 	FirstSeenAt      time.Time        `json:"firstSeenAt"`
 	LastSeenAt       time.Time        `json:"lastSeenAt"`
 	ReplicaSnapshot  *ReplicaSnapshot `json:"replicaSnapshot,omitempty"`
+
+	// WindowEntryRevision 记录进入 downWindow 时（首次缩容时）的 RevisionHash。
+	// 仅在 downWindow 内有值，窗口外清空。
+	WindowEntryRevision string `json:"windowEntryRevision,omitempty"`
+
+	// WindowInstanceID 标识当前 downWindow 的具体周期实例。
+	// 格式: "{windowName}:{YYYY-MM-DD}" 其中日期为窗口开始日。
+	// 用于区分同名窗口的不同周期（如每日夜间窗口的周一实例和周二实例）。
+	WindowInstanceID string `json:"windowInstanceID,omitempty"`
+
+	// ScaleDownSkipped 标记该 Workload 在当前窗口周期内因 Revision 变化而跳过缩容。
+	// 仅在 WindowInstanceID 对应的周期内有效。
+	ScaleDownSkipped bool `json:"scaleDownSkipped,omitempty"`
 }
 
 func (s WorkloadState) Key() string {
