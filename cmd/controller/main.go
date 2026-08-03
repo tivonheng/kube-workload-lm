@@ -85,7 +85,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	inventory := workload.NewKubernetesGateway(workload.NewKubernetesReadClient(client.AppsV1()))
 	hpa := workload.NewKubernetesHPADetector(client.AutoscalingV2())
 	scale := workload.NewKubernetesScaleGateway(client.AppsV1())
-	reconciler, err := controller.NewReconciler(stateStore, scale, hpa, lifecycle.RealClock{})
+	deleter := workload.NewKubernetesDeleter(client.AppsV1())
+	reconciler, err := controller.NewReconciler(stateStore, scale, deleter, hpa, lifecycle.RealClock{})
 	if err != nil {
 		return err
 	}

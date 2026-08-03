@@ -23,17 +23,18 @@ type HPAEvaluator interface {
 
 // Reconciler performs one workload's durable state and scale transition.
 type Reconciler struct {
-	store state.StateStore
-	scale workload.ScaleGateway
-	hpa   HPAEvaluator
-	clock lifecycle.Clock
+	store   state.StateStore
+	scale   workload.ScaleGateway
+	deleter workload.WorkloadDeleter
+	hpa     HPAEvaluator
+	clock   lifecycle.Clock
 }
 
-func NewReconciler(store state.StateStore, scale workload.ScaleGateway, hpa HPAEvaluator, clock lifecycle.Clock) (*Reconciler, error) {
-	if store == nil || scale == nil || hpa == nil || clock == nil {
+func NewReconciler(store state.StateStore, scale workload.ScaleGateway, deleter workload.WorkloadDeleter, hpa HPAEvaluator, clock lifecycle.Clock) (*Reconciler, error) {
+	if store == nil || scale == nil || deleter == nil || hpa == nil || clock == nil {
 		return nil, ErrInvalidReconciler
 	}
-	return &Reconciler{store: store, scale: scale, hpa: hpa, clock: clock}, nil
+	return &Reconciler{store: store, scale: scale, deleter: deleter, hpa: hpa, clock: clock}, nil
 }
 
 // Reconcile applies the selected policy to a current workload. The caller owns
@@ -117,7 +118,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 		ScheduledDown: scheduledDown, ScheduledWindowName: windowName,
 		ScheduledTarget: selected.Replicas.ScheduledDown, ExpiredTarget: selected.Replicas.Expired,
 		ScaleDownSkipped: currentState.ScaleDownSkipped, ScaleDownSkipReason: currentState.ScaleDownSkipReason,
+		ExpiredAction: selected.Lifecycle.ExpiredAction,
 	})
+
+	if decision.DeleteWorkload {
+		if err := r.deleter.Delete(ctx, live); err != nil {
+			return decision, fmt.Errorf("delete expired workload %s: %w", current.Key(), err)
+		}
+		delete(document.States, current.Key())
+		if err := r.store.Save(ctx, document); err != nil {
+			return decision, fmt.Errorf("clean state after deleting %s: %w", current.Key(), err)
+		}
+		return decision, nil
+	}
+
 	if err := r.applyDecision(ctx, live, decision, document, currentState, identityChanged, now); err != nil {
 		return decision, err
 	}

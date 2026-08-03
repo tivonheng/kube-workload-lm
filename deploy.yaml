@@ -75,6 +75,7 @@ rules:
   - get
   - list
   - watch
+  - delete
 - apiGroups:
   - apps
   resources:
@@ -139,6 +140,9 @@ data:
               - "staging-.*"
           lifecycle:
             maxAge: 48h
+            # expiredAction: "scale" (default) or "delete"
+            # When set to "delete", expired workloads are deleted instead of scaled down.
+            expiredAction: delete
             revision:
               source: ContainerImages
           replicas:
@@ -236,7 +240,7 @@ spec:
           value: workload-lifecycle-controller
         - name: OBSERVABILITY_ADDR
           value: :8080
-        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:54f1bde
+        image: gitlab.glb.osl-nucleus.com/devops/kube-workload-lifecycle-manager:v0.1.0
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3

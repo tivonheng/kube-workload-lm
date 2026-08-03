@@ -1,6 +1,6 @@
 # Kubernetes Workload Lifecycle Manager
 
-A Kubernetes controller that scales Deployments and StatefulSets through their `scale` subresources according to container-image Revision age and timezone-aware down windows. It never edits Pod templates or deletes Workloads, Pods, PVCs, or other application objects.
+A Kubernetes controller that scales Deployments and StatefulSets through their `scale` subresources according to container-image Revision age and timezone-aware down windows. It never edits Pod templates and does not delete Pods, PVCs, or other application objects. Workload deletion (of the Deployment or StatefulSet object itself) is available only as an explicit opt-in via `expiredAction: delete` in the matching policy (see [Safety Invariants](#safety-invariants) below).
 
 ## Architecture and safety semantics
 
@@ -186,7 +186,15 @@ Leader election uses Lease `lifecycle-system/workload-lifecycle-controller` with
 
 The Deployment runs as UID/GID 65532 with no privilege escalation, all Linux capabilities dropped, `RuntimeDefault` seccomp, and a read-only root filesystem. The `scratch` runtime image contains only the static controller, CA trust bundle, and IANA timezone data copied from the pinned builder.
 
-Cluster RBAC permits `get/list/watch` on Deployments and StatefulSets, `get/update` only on their `scale` subresources, and `get/list/watch` on HPAs. Namespace RBAC permits policy/state ConfigMap reads and watches, state ConfigMap create/update, and Lease create/get/update. Kubernetes cannot constrain `create` by resource name, which is why the namespace-scoped create grants are separate. The controller receives no Workload update/patch/delete or Pod/PVC delete permission.
+Cluster RBAC permits `get/list/watch/delete` on Deployments and StatefulSets, `get/update` only on their `scale` subresources, and `get/list/watch` on HPAs. Namespace RBAC permits policy/state ConfigMap reads and watches, state ConfigMap create/update, and Lease create/get/update. Kubernetes cannot constrain `create` by resource name, which is why the namespace-scoped create grants are separate. The controller receives no Workload update/patch or Pod/PVC delete permission.
+
+### Safety Invariants
+
+1. **Opt-in expired deletion is the Controller's only deletion path.** The Controller will delete a Deployment or StatefulSet object exclusively when the matching policy's `expiredAction` field is explicitly set to the string `delete` and the Workload's Revision has exceeded `maxAge`. Policies where `expiredAction` is `scale`, empty, or unconfigured will never trigger deletion — the existing scale-down behavior applies instead.
+
+2. **Deletion targets only the Workload object itself.** The Controller issues a delete API call solely against the Deployment or StatefulSet resource. It does not directly delete Pods, PVCs, Services, or any other related objects. Downstream cleanup (e.g., Pod termination) is handled by Kubernetes' built-in garbage collection via the Foreground deletion propagation policy.
+
+3. **Without explicit `expiredAction: delete`, the Controller will never delete workloads.** If the Controller cannot confirm that a policy specifies `expiredAction: delete` (due to ConfigMap load failure, YAML parse error, or an invalid field value), it will not execute deletion and will treat the Workload as if no action is required.
 
 ## State and upgrade compatibility
 

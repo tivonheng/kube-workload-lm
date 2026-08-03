@@ -22,6 +22,9 @@ data:
               - "staging-.*"
           lifecycle:
             maxAge: 48h
+            # expiredAction: "scale" (default) or "delete"
+            # When set to "delete", expired workloads are deleted instead of scaled down.
+            expiredAction: delete
             revision:
               source: ContainerImages
           replicas:

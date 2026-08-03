@@ -80,6 +80,22 @@ func (scale *fakeScale) Update(_ context.Context, _ workload.Workload, replicas 
 	return nil
 }
 
+type noOpDeleter struct{}
+
+func (noOpDeleter) Delete(context.Context, workload.Workload) error { return nil }
+
+type fakeDeleter struct {
+	called bool
+	target workload.Workload
+	err    error
+}
+
+func (d *fakeDeleter) Delete(_ context.Context, w workload.Workload) error {
+	d.called = true
+	d.target = w
+	return d.err
+}
+
 func cloneDocument(document state.Document) state.Document {
 	copy := state.Document{FormatVersion: document.FormatVersion, States: make(map[string]state.WorkloadState, len(document.States))}
 	for key, value := range document.States {
@@ -114,7 +130,7 @@ func newHarness(t *testing.T, document state.Document, replicas int32) (*Reconci
 	ops := []string{}
 	store := &memoryStore{document: document, ops: &ops}
 	scale := &fakeScale{replicas: replicas, ops: &ops}
-	reconciler, err := NewReconciler(store, scale, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
+	reconciler, err := NewReconciler(store, scale, noOpDeleter{}, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +249,7 @@ func TestHPARejectionOccursBeforeStateOrScaleAccess(t *testing.T) {
 	ops := []string{}
 	store := &memoryStore{document: state.NewDocument(), ops: &ops}
 	scale := &fakeScale{replicas: 3, ops: &ops}
-	reconciler, _ := NewReconciler(store, scale, fakeHPA{result: workload.HPAEvaluation{Reason: workload.HPAReasonConflict}, ops: &ops}, fixedClock{testNow})
+	reconciler, _ := NewReconciler(store, scale, noOpDeleter{}, fakeHPA{result: workload.HPAEvaluation{Reason: workload.HPAReasonConflict}, ops: &ops}, fixedClock{testNow})
 	if _, err := reconciler.Reconcile(context.Background(), testWorkload("uid-1", "api:v1"), testPolicy(true, 0)); !errors.Is(err, workload.ErrHPAConflict) {
 		t.Fatalf("err=%v", err)
 	}
@@ -458,7 +474,7 @@ func TestExternalReplicaOverrideSkipsSameWindowAndSurvivesRestart(t *testing.T) 
 	}
 
 	beforeRestart := len(*ops)
-	restarted, err := NewReconciler(store, scale, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, fixedClock{testNow})
+	restarted, err := NewReconciler(store, scale, noOpDeleter{}, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, fixedClock{testNow})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +493,7 @@ func TestExternalReplicaOverrideSkipsSameWindowAndSurvivesRestart(t *testing.T) 
 func TestReplicaOverrideClearsAtWindowBoundaryAndSchedulingResumes(t *testing.T) {
 	t.Run("outside window", func(t *testing.T) {
 		store, scale, ops, current, selected := prepareReplicaOverride(t)
-		decision, err := (&Reconciler{store: store, scale: scale, hpa: fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, clock: fixedClock{testNow}}).
+		decision, err := (&Reconciler{store: store, scale: scale, deleter: noOpDeleter{}, hpa: fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, clock: fixedClock{testNow}}).
 			Reconcile(context.Background(), current, testPolicy(false, 2))
 		if err != nil {
 			t.Fatal(err)
@@ -487,7 +503,7 @@ func TestReplicaOverrideClearsAtWindowBoundaryAndSchedulingResumes(t *testing.T)
 			t.Fatalf("outside-window decision=%#v state=%#v", decision, cleared)
 		}
 
-		decision, err = (&Reconciler{store: store, scale: scale, hpa: fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, clock: fixedClock{testNow}}).
+		decision, err = (&Reconciler{store: store, scale: scale, deleter: noOpDeleter{}, hpa: fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, clock: fixedClock{testNow}}).
 			Reconcile(context.Background(), current, selected)
 		if err != nil {
 			t.Fatal(err)
@@ -501,7 +517,7 @@ func TestReplicaOverrideClearsAtWindowBoundaryAndSchedulingResumes(t *testing.T)
 	t.Run("new window instance", func(t *testing.T) {
 		store, scale, ops, current, selected := prepareReplicaOverride(t)
 		oldInstance := store.document.States[current.Key()].WindowInstanceID
-		nextWindow, err := NewReconciler(store, scale, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, fixedClock{testNow.Add(24 * time.Hour)})
+		nextWindow, err := NewReconciler(store, scale, noOpDeleter{}, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: ops}, fixedClock{testNow.Add(24 * time.Hour)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -567,4 +583,184 @@ func prepareReplicaOverride(t *testing.T) (*memoryStore, *fakeScale, *[]string, 
 		t.Fatalf("override performed scale write: %v", (*ops)[beforeOverride:])
 	}
 	return store, scale, ops, current, selected
+}
+
+// --- Deletion logic tests ---
+
+// testPolicyWithExpiredAction creates a policy with a given expiredAction value.
+// If scheduled is true, an always-on window is attached.
+func testPolicyWithExpiredAction(scheduled bool, target int32, expiredAction string) policy.Policy {
+	p := testPolicy(scheduled, target)
+	p.Lifecycle.ExpiredAction = expiredAction
+	return p
+}
+
+// expiredDocument creates a document where the workload has been seen long enough ago
+// to be considered expired (firstSeenAt is 73 hours before testNow, maxAge is 72h).
+func expiredDocument(t *testing.T, current workload.Workload) state.Document {
+	t.Helper()
+	revision, err := lifecycle.CalculateRevision(current.Containers, lifecycle.TrackingSpec{Source: lifecycle.SourceContainerImages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := state.WorkloadState{
+		Kind: current.Kind, Namespace: current.Namespace, Name: current.Name, WorkloadUID: current.UID,
+		LastPolicyName: "temporary", TrackingSpecHash: revision.TrackingSpecHash, RevisionHash: revision.RevisionHash,
+		Revision:    state.Revision{Source: lifecycle.SourceContainerImages, Containers: revision.Containers},
+		FirstSeenAt: testNow.Add(-73 * time.Hour), LastSeenAt: testNow,
+	}
+	document := state.NewDocument()
+	document.States[value.Key()] = value
+	return document
+}
+
+func TestExpiredDeleteCallsDeleterAndCleansState(t *testing.T) {
+	current := testWorkload("uid-del-1", "api:v1")
+	document := expiredDocument(t, current)
+
+	ops := []string{}
+	store := &memoryStore{document: document, ops: &ops}
+	scale := &fakeScale{replicas: 3, ops: &ops}
+	deleter := &fakeDeleter{}
+
+	reconciler, err := NewReconciler(store, scale, deleter, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicyWithExpiredAction(false, 0, policy.ExpiredActionDelete))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !decision.DeleteWorkload {
+		t.Fatal("expected DeleteWorkload=true")
+	}
+	if decision.Reason != lifecycle.ReasonRevisionExpiredDeleted {
+		t.Fatalf("reason=%q want %q", decision.Reason, lifecycle.ReasonRevisionExpiredDeleted)
+	}
+	if !deleter.called {
+		t.Fatal("deleter.Delete was not called")
+	}
+	if _, exists := store.document.States[current.Key()]; exists {
+		t.Fatal("state entry was not removed after successful deletion")
+	}
+}
+
+func TestExpiredDeleteFailurePreservesState(t *testing.T) {
+	current := testWorkload("uid-del-2", "api:v1")
+	document := expiredDocument(t, current)
+
+	ops := []string{}
+	store := &memoryStore{document: document, ops: &ops}
+	scale := &fakeScale{replicas: 3, ops: &ops}
+	deleter := &fakeDeleter{err: errors.New("API unavailable")}
+
+	reconciler, err := NewReconciler(store, scale, deleter, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = reconciler.Reconcile(context.Background(), current, testPolicyWithExpiredAction(false, 0, policy.ExpiredActionDelete))
+	if err == nil {
+		t.Fatal("expected error from failed delete")
+	}
+	if !deleter.called {
+		t.Fatal("deleter.Delete was not called")
+	}
+	if _, exists := store.document.States[current.Key()]; !exists {
+		t.Fatal("state entry was removed despite delete failure")
+	}
+}
+
+func TestExpiredDeleteSuccessButSaveFailsReturnsError(t *testing.T) {
+	current := testWorkload("uid-del-3", "api:v1")
+	document := expiredDocument(t, current)
+
+	ops := []string{}
+	store := &memoryStore{document: document, ops: &ops}
+	// Fail on the save that happens after state cleanup (state entry removed from map).
+	saveCallCount := 0
+	store.failSave = func(doc state.Document) error {
+		saveCallCount++
+		// The first save is the identity reconcile save. The state cleanup save
+		// happens when the document no longer has the workload key.
+		if _, exists := doc.States[current.Key()]; !exists {
+			return errors.New("configmap write failed")
+		}
+		return nil
+	}
+	scale := &fakeScale{replicas: 3, ops: &ops}
+	deleter := &fakeDeleter{}
+
+	reconciler, err := NewReconciler(store, scale, deleter, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = reconciler.Reconcile(context.Background(), current, testPolicyWithExpiredAction(false, 0, policy.ExpiredActionDelete))
+	if err == nil {
+		t.Fatal("expected error from failed save after delete")
+	}
+	if !deleter.called {
+		t.Fatal("deleter.Delete was not called")
+	}
+	if !strings.Contains(err.Error(), "clean state") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestNotExpiredWithDeletePolicyDoesNotCallDeleter(t *testing.T) {
+	current := testWorkload("uid-del-4", "api:v1")
+	// Use a fresh document — the workload is NOT expired (firstSeenAt will be set to now).
+	document := state.NewDocument()
+
+	ops := []string{}
+	store := &memoryStore{document: document, ops: &ops}
+	scale := &fakeScale{replicas: 3, ops: &ops}
+	deleter := &fakeDeleter{}
+
+	reconciler, err := NewReconciler(store, scale, deleter, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicyWithExpiredAction(false, 0, policy.ExpiredActionDelete))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.DeleteWorkload {
+		t.Fatal("DeleteWorkload should be false for non-expired workload")
+	}
+	if deleter.called {
+		t.Fatal("deleter.Delete should not be called when workload is not expired")
+	}
+}
+
+func TestExpiredWithScalePolicyDoesNotCallDeleter(t *testing.T) {
+	current := testWorkload("uid-del-5", "api:v1")
+	document := expiredDocument(t, current)
+
+	ops := []string{}
+	store := &memoryStore{document: document, ops: &ops}
+	scale := &fakeScale{replicas: 3, ops: &ops}
+	deleter := &fakeDeleter{}
+
+	reconciler, err := NewReconciler(store, scale, deleter, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &ops}, fixedClock{testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicyWithExpiredAction(false, 0, policy.ExpiredActionScale))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.DeleteWorkload {
+		t.Fatal("DeleteWorkload should be false for scale policy")
+	}
+	if decision.Reason != lifecycle.ReasonRevisionExpired {
+		t.Fatalf("reason=%q want %q", decision.Reason, lifecycle.ReasonRevisionExpired)
+	}
+	if deleter.called {
+		t.Fatal("deleter.Delete should not be called when expiredAction is scale")
+	}
 }

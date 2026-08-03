@@ -145,7 +145,7 @@ func TestDeploymentAndRBACEnforceReleaseSecurity(t *testing.T) {
 			}
 			if resource == "deployments" || resource == "statefulsets" {
 				for _, verb := range rule.Verbs {
-					if verb != "get" && verb != "list" && verb != "watch" {
+					if verb != "get" && verb != "list" && verb != "watch" && verb != "delete" {
 						t.Fatalf("ClusterRole grants workload-body mutation: %s %s", verb, resource)
 					}
 				}

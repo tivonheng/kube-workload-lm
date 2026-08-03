@@ -381,6 +381,7 @@ func newReconciler(t *testing.T, store state.StateStore, client kubernetes.Inter
 	reconciler, err := controller.NewReconciler(
 		store,
 		workload.NewKubernetesScaleGateway(client.AppsV1()),
+		workload.NewKubernetesDeleter(client.AppsV1()),
 		workload.NewKubernetesHPADetector(client.AutoscalingV2()),
 		fixedClock{now: now},
 	)
