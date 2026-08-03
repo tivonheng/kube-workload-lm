@@ -15,6 +15,9 @@ const (
 	APIVersion    = "lifecycle.example.com/v1alpha1"
 	Kind          = "WorkloadLifecyclePolicySet"
 	DefaultMaxAge = 72 * time.Hour
+
+	ExpiredActionScale  = "scale"
+	ExpiredActionDelete = "delete"
 )
 
 type PolicySet struct {
@@ -41,8 +44,9 @@ type Target struct {
 }
 
 type Lifecycle struct {
-	MaxAge   time.Duration
-	Revision lifecycle.TrackingSpec
+	MaxAge        time.Duration
+	Revision      lifecycle.TrackingSpec
+	ExpiredAction string // "scale" (default) | "delete"
 }
 
 type Replicas struct {

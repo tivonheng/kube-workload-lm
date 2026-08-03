@@ -166,7 +166,7 @@ func compileNamePatterns(raw *[]string) ([]*regexp.Regexp, []string, error) {
 }
 
 func compileLifecycle(raw *rawLifecycle) (Lifecycle, error) {
-	result := Lifecycle{MaxAge: DefaultMaxAge, Revision: lifecycle.TrackingSpec{Source: lifecycle.SourceContainerImages}}
+	result := Lifecycle{MaxAge: DefaultMaxAge, Revision: lifecycle.TrackingSpec{Source: lifecycle.SourceContainerImages}, ExpiredAction: ExpiredActionScale}
 	if raw == nil {
 		return result, nil
 	}
@@ -177,31 +177,43 @@ func compileLifecycle(raw *rawLifecycle) (Lifecycle, error) {
 		}
 		result.MaxAge = parsed
 	}
-	if raw.Revision == nil {
-		return result, nil
-	}
-	if raw.Revision.Source != nil {
-		if *raw.Revision.Source != lifecycle.SourceContainerImages {
-			return Lifecycle{}, fmt.Errorf("unsupported revision source %q", *raw.Revision.Source)
-		}
-		result.Revision.Source = *raw.Revision.Source
-	}
-	if raw.Revision.Containers != nil {
-		if len(*raw.Revision.Containers) == 0 {
-			return Lifecycle{}, fmt.Errorf("revision.containers must be omitted or non-empty")
-		}
-		seen := make(map[string]struct{}, len(*raw.Revision.Containers))
-		for _, name := range *raw.Revision.Containers {
-			if name == "" {
-				return Lifecycle{}, fmt.Errorf("revision.containers cannot contain an empty name")
+	if raw.Revision != nil {
+		if raw.Revision.Source != nil {
+			if *raw.Revision.Source != lifecycle.SourceContainerImages {
+				return Lifecycle{}, fmt.Errorf("unsupported revision source %q", *raw.Revision.Source)
 			}
-			if _, exists := seen[name]; exists {
-				return Lifecycle{}, fmt.Errorf("duplicate revision container %q", name)
-			}
-			seen[name] = struct{}{}
+			result.Revision.Source = *raw.Revision.Source
 		}
-		result.Revision.Containers = append([]string(nil), (*raw.Revision.Containers)...)
+		if raw.Revision.Containers != nil {
+			if len(*raw.Revision.Containers) == 0 {
+				return Lifecycle{}, fmt.Errorf("revision.containers must be omitted or non-empty")
+			}
+			seen := make(map[string]struct{}, len(*raw.Revision.Containers))
+			for _, name := range *raw.Revision.Containers {
+				if name == "" {
+					return Lifecycle{}, fmt.Errorf("revision.containers cannot contain an empty name")
+				}
+				if _, exists := seen[name]; exists {
+					return Lifecycle{}, fmt.Errorf("duplicate revision container %q", name)
+				}
+				seen[name] = struct{}{}
+			}
+			result.Revision.Containers = append([]string(nil), (*raw.Revision.Containers)...)
+		}
 	}
+
+	expiredAction := ExpiredActionScale
+	if raw.ExpiredAction != nil && *raw.ExpiredAction != "" {
+		switch *raw.ExpiredAction {
+		case ExpiredActionScale, ExpiredActionDelete:
+			expiredAction = *raw.ExpiredAction
+		default:
+			return Lifecycle{}, fmt.Errorf("invalid expiredAction %q: must be %q or %q",
+				*raw.ExpiredAction, ExpiredActionScale, ExpiredActionDelete)
+		}
+	}
+	result.ExpiredAction = expiredAction
+
 	return result, nil
 }
 

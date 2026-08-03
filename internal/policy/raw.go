@@ -42,8 +42,9 @@ type rawSelectorRequirement struct {
 }
 
 type rawLifecycle struct {
-	MaxAge   *string      `yaml:"maxAge,omitempty"`
-	Revision *rawRevision `yaml:"revision,omitempty"`
+	MaxAge        *string      `yaml:"maxAge,omitempty"`
+	Revision      *rawRevision `yaml:"revision,omitempty"`
+	ExpiredAction *string      `yaml:"expiredAction,omitempty"`
 }
 
 type rawRevision struct {

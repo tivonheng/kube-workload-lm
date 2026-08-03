@@ -66,3 +66,74 @@ func TestDecodeRejectsInvalidDocuments(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeExpiredAction(t *testing.T) {
+	baseYAML := func(expiredActionLine string) string {
+		lifecycle := "      lifecycle:\n        maxAge: 72h\n"
+		if expiredActionLine != "" {
+			lifecycle += "        " + expiredActionLine + "\n"
+		}
+		return `apiVersion: lifecycle.example.com/v1alpha1
+kind: WorkloadLifecyclePolicySet
+spec:
+  policies:
+    - name: test-expired-action
+      priority: 50
+      target:
+        kinds: [Deployment]
+        selector:
+          matchLabels:
+            app: demo
+` + lifecycle
+	}
+
+	t.Run("scale-accepted", func(t *testing.T) {
+		set, err := Decode([]byte(baseYAML(`expiredAction: scale`)))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := set.Policies[0].Lifecycle.ExpiredAction; got != ExpiredActionScale {
+			t.Fatalf("expected ExpiredAction=%q, got %q", ExpiredActionScale, got)
+		}
+	})
+
+	t.Run("delete-accepted", func(t *testing.T) {
+		set, err := Decode([]byte(baseYAML(`expiredAction: delete`)))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := set.Policies[0].Lifecycle.ExpiredAction; got != ExpiredActionDelete {
+			t.Fatalf("expected ExpiredAction=%q, got %q", ExpiredActionDelete, got)
+		}
+	})
+
+	t.Run("nil-defaults-to-scale", func(t *testing.T) {
+		set, err := Decode([]byte(baseYAML("")))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := set.Policies[0].Lifecycle.ExpiredAction; got != ExpiredActionScale {
+			t.Fatalf("expected ExpiredAction=%q (default), got %q", ExpiredActionScale, got)
+		}
+	})
+
+	t.Run("empty-string-defaults-to-scale", func(t *testing.T) {
+		set, err := Decode([]byte(baseYAML(`expiredAction: ""`)))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := set.Policies[0].Lifecycle.ExpiredAction; got != ExpiredActionScale {
+			t.Fatalf("expected ExpiredAction=%q (default), got %q", ExpiredActionScale, got)
+		}
+	})
+
+	t.Run("invalid-value-rejected", func(t *testing.T) {
+		_, err := Decode([]byte(baseYAML(`expiredAction: remove`)))
+		if err == nil {
+			t.Fatal("expected error for invalid expiredAction")
+		}
+		if !strings.Contains(err.Error(), "invalid expiredAction") {
+			t.Fatalf("error should mention 'invalid expiredAction', got: %v", err)
+		}
+	})
+}
