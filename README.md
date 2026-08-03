@@ -11,6 +11,8 @@ Workload/HPA watches -> controller -> snapshot transaction -> ConfigMap StateSto
                                       `-> JSON logs, probes, Prometheus metrics
 ```
 
+**Detailed design:** See [docs/design.md](docs/design.md) for the implementation-accurate architecture, reconciliation order, and core business flows.
+
 The controller watches Deployments, StatefulSets, HPAs, and the policy ConfigMap. Events trigger reconciliation and a 30-second full reconciliation closes watch gaps. Policy matching requires kind plus at least one of label selector or name patterns; the unique highest-priority policy wins. A tie at the highest priority is rejected without state or scale mutation. Invalid policy updates are rejected atomically and the last valid policy snapshot remains active.
 
 Only the elected leader reconciles. Every replica serves HTTP, but `/readyz` succeeds only when that replica is the leader, an initial valid policy exists, and state dependencies loaded successfully.
