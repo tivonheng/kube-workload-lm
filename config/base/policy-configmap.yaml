@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-lifecycle-policies
+  namespace: lifecycle-system
+  labels:
+    app.kubernetes.io/name: workload-lifecycle-controller
+data:
+  policies.yaml: |
+    apiVersion: lifecycle.example.com/v1alpha1
+    kind: WorkloadLifecyclePolicySet
+    spec:
+      policies:
+        - name: pfb-workload
+          priority: 50
+          target:
+            kinds:
+              - Deployment
+              - StatefulSet
+            namePatterns:
+              - ".*pfb\\d+"
+              - "staging-.*"
+          lifecycle:
+            maxAge: 48h
+            # expiredAction: "scale" (default) or "delete"
+            # When set to "delete", expired workloads are deleted instead of scaled down.
+            expiredAction: delete
+            revision:
+              source: ContainerImages
+          replicas:
+            scheduledDown: 0
+            expired: 0
+          schedule:
+            timeZone: Asia/Shanghai
+            downWindows:
+              - name: weekday-early-morning
+                startDays: [MON, TUE, WED, THU, FRI]
+                start: "00:00"
+                end: "08:00"
+              - name: weekend-all-day
+                startDays: [SAT, SUN]
+                allDay: true
+  
