@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: workload-lifecycle-controller-metrics
+  namespace: lifecycle-system
+  labels:
+    app.kubernetes.io/name: workload-lifecycle-controller
+spec:
+  selector:
+    app.kubernetes.io/name: workload-lifecycle-controller
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

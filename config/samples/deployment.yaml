@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: all-containers-demo
+  namespace: lifecycle-demo
+  labels:
+    lifecycle.example.com/policy: all-containers
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: all-containers-demo
+  template:
+    metadata:
+      labels:
+        app: all-containers-demo
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10.1
+        # With the default policy, changing this image creates a new Revision.
+        - name: sidecar
+          image: registry.k8s.io/pause:3.10.1

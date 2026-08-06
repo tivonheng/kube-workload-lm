@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: workload-lifecycle-controller
+  labels:
+    app.kubernetes.io/name: workload-lifecycle-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: workload-lifecycle-controller
+subjects:
+  - kind: ServiceAccount
+    name: workload-lifecycle-controller
+    namespace: lifecycle-system
