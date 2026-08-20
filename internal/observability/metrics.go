@@ -18,6 +18,7 @@ type Metrics struct {
 	policyReloads   *prometheus.CounterVec
 	policyReady     prometheus.Gauge
 	ready           prometheus.Gauge
+	leader          prometheus.Gauge
 	stateBytes      *prometheus.GaugeVec
 	stateNearLimit  prometheus.Gauge
 	stateExceeded   prometheus.Gauge
@@ -30,13 +31,14 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 		errors:          prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: metricNamespace, Name: "errors_total", Help: "Controller errors by component and bounded reason."}, []string{"component", "reason"}),
 		policyReloads:   prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: metricNamespace, Name: "policy_reloads_total", Help: "Policy reload events by bounded result."}, []string{"result"}),
 		policyReady:     prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "policy_ready", Help: "Whether an initial valid policy snapshot exists."}),
-		ready:           prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "ready", Help: "Whether the controller is ready to reconcile."}),
+		ready:           prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "ready", Help: "Whether this replica reports ready."}),
+		leader:          prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "leader", Help: "Whether this replica currently holds the leader Lease and reconciles."}),
 		stateBytes:      prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "state_store_bytes", Help: "StateStore payload and total ConfigMap data bytes."}, []string{"scope"}),
 		stateNearLimit:  prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "state_store_near_limit", Help: "Whether StateStore usage is at or above its warning threshold."}),
 		stateExceeded:   prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricNamespace, Name: "state_store_exceeded", Help: "Whether StateStore usage exceeds its hard capacity."}),
 	}
 	registerer.MustRegister(metrics.reconciliations, metrics.decisions, metrics.errors, metrics.policyReloads,
-		metrics.policyReady, metrics.ready, metrics.stateBytes, metrics.stateNearLimit, metrics.stateExceeded)
+		metrics.policyReady, metrics.ready, metrics.leader, metrics.stateBytes, metrics.stateNearLimit, metrics.stateExceeded)
 	return metrics
 }
 
@@ -66,6 +68,10 @@ func (metrics *Metrics) SetReadiness(policyReady, ready bool) {
 	metrics.ready.Set(boolFloat(ready))
 }
 
+func (metrics *Metrics) SetLeader(leader bool) {
+	metrics.leader.Set(boolFloat(leader))
+}
+
 func (metrics *Metrics) ObserveStateCapacity(capacity state.Capacity) {
 	metrics.stateBytes.WithLabelValues("state").Set(float64(capacity.StateBytes))
 	metrics.stateBytes.WithLabelValues("total").Set(float64(capacity.TotalBytes))
@@ -77,8 +83,12 @@ func boundedReason(reason string) string {
 	if strings.HasPrefix(reason, "scale-down-window") {
 		return "scale-down-window"
 	}
+	if strings.HasPrefix(reason, "scale-down-skipped") {
+		return "scale-down-skipped"
+	}
 	switch reason {
-	case "revision-lifecycle-expired", "restore-previous-replicas", "active-window",
+	case "revision-lifecycle-expired", "revision-lifecycle-expired:deleted",
+		"restore-previous-replicas", "active-window",
 		"no-policy-snapshot", "policy-conflict", "no-matching-policy", "transition-error":
 		return reason
 	default:

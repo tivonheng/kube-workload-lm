@@ -137,9 +137,8 @@ data:
               - StatefulSet
             namePatterns:
               - ".*pfb\\d+"
-              - "staging-.*"
           lifecycle:
-            maxAge: 48h
+            maxAge: 72h
             # expiredAction: "scale" (default) or "delete"
             # When set to "delete", expired workloads are deleted instead of scaled down.
             expiredAction: delete
@@ -240,7 +239,7 @@ spec:
           value: workload-lifecycle-controller
         - name: OBSERVABILITY_ADDR
           value: :8080
-        image: gitlab.glb.osl-nucleus.com/devops/kube-workload-lifecycle-manager:v0.1.0
+        image: 557690602572.dkr.ecr.eu-central-1.amazonaws.com/kube-workload-lifecycle-manager:774ae91
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3

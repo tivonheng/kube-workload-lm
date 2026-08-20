@@ -16,6 +16,8 @@ type Readiness struct {
 	policies     PolicyProvider
 	controllerOn atomic.Bool
 	dependencies atomic.Bool
+	leader       atomic.Bool
+	shuttingDown atomic.Bool
 }
 
 func NewReadiness(policies PolicyProvider) *Readiness {
@@ -30,6 +32,26 @@ func (readiness *Readiness) SetControllerRunning(running bool) {
 	readiness.controllerOn.Store(running)
 }
 
+// SetLeader records whether this replica currently holds the leader Lease. It
+// affects how Ready is evaluated but never blocks a standby replica.
+func (readiness *Readiness) SetLeader(leader bool) {
+	readiness.leader.Store(leader)
+}
+
+// SetShuttingDown marks the replica as draining so it stops advertising
+// readiness before its listener closes.
+func (readiness *Readiness) SetShuttingDown(down bool) {
+	readiness.shuttingDown.Store(down)
+}
+
+func (readiness *Readiness) Leading() bool {
+	return readiness.leader.Load()
+}
+
+func (readiness *Readiness) DependenciesReady() bool {
+	return readiness.dependencies.Load()
+}
+
 func (readiness *Readiness) PolicyReady() bool {
 	if readiness.policies == nil {
 		return false
@@ -38,8 +60,26 @@ func (readiness *Readiness) PolicyReady() bool {
 	return ok
 }
 
+// Ready reports whether this replica is healthy enough to serve probes and, for
+// a leader-elected controller, whether a rolling update may proceed.
+//
+// Readiness deliberately does not require leadership. Gating it on leadership
+// deadlocks rolling updates: an incoming replica cannot acquire the Lease until
+// the outgoing leader's Pod terminates, but the Deployment will not terminate
+// that Pod until the incoming replica reports Ready. A standby replica is Ready
+// once its dependencies are usable so it can take over as soon as the Lease is
+// released. Leadership is observable through the leader metric instead.
 func (readiness *Readiness) Ready() bool {
-	return readiness.controllerOn.Load() && readiness.dependencies.Load() && readiness.PolicyReady()
+	if readiness.shuttingDown.Load() {
+		return false
+	}
+	if !readiness.dependencies.Load() || !readiness.PolicyReady() {
+		return false
+	}
+	if readiness.leader.Load() {
+		return readiness.controllerOn.Load()
+	}
+	return true
 }
 
 type Telemetry struct {
@@ -103,4 +143,5 @@ func (telemetry *Telemetry) ObserveError(component string, err error) {
 
 func (telemetry *Telemetry) refreshReadiness() {
 	telemetry.metrics.SetReadiness(telemetry.readiness.PolicyReady(), telemetry.readiness.Ready())
+	telemetry.metrics.SetLeader(telemetry.readiness.Leading())
 }

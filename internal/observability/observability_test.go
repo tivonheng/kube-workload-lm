@@ -94,6 +94,7 @@ func TestHealthAndReadinessTransitionsKeepLastGoodPolicy(t *testing.T) {
 	manager := &policy.Manager{}
 	readiness := NewReadiness(manager)
 	readiness.SetDependenciesReady(true)
+	readiness.SetLeader(true)
 	readiness.SetControllerRunning(true)
 	handler := NewHTTPHandler(readiness, metrics, registry)
 	assertStatus(t, handler, "/healthz", http.StatusOK)
@@ -109,6 +110,102 @@ func TestHealthAndReadinessTransitionsKeepLastGoodPolicy(t *testing.T) {
 	readiness.SetControllerRunning(false)
 	assertStatus(t, handler, "/readyz", http.StatusServiceUnavailable)
 	assertStatus(t, handler, "/healthz", http.StatusOK)
+}
+
+// TestStandbyReplicaIsReadySoRollingUpdatesCannotDeadlock guards the rollout
+// deadlock: when readiness required leadership, an incoming replica could never
+// become Ready (it cannot hold the Lease while the outgoing leader still runs),
+// so the Deployment never retired the old leader and the rollout stalled.
+func TestStandbyReplicaIsReadySoRollingUpdatesCannotDeadlock(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics := NewMetrics(registry)
+	manager := &policy.Manager{}
+	if err := manager.Reload([]byte(validPolicy)); err != nil {
+		t.Fatal(err)
+	}
+	readiness := NewReadiness(manager)
+	readiness.SetDependenciesReady(true)
+	handler := NewHTTPHandler(readiness, metrics, registry)
+
+	// Standby: never acquired the Lease, controller loop not running.
+	if readiness.Leading() {
+		t.Fatal("fresh replica reported leadership")
+	}
+	assertStatus(t, handler, "/readyz", http.StatusOK)
+	assertBodyContains(t, handler, "/readyz", `"role":"standby"`)
+	assertGauge(t, registry, metricNamespace+"_leader", 0)
+
+	// Promotion to leader keeps it ready and flips the leader gauge.
+	readiness.SetLeader(true)
+	readiness.SetControllerRunning(true)
+	assertStatus(t, handler, "/readyz", http.StatusOK)
+	assertBodyContains(t, handler, "/readyz", `"role":"leader"`)
+	assertGauge(t, registry, metricNamespace+"_leader", 1)
+
+	// A leader whose controller loop died must fail readiness.
+	readiness.SetControllerRunning(false)
+	assertStatus(t, handler, "/readyz", http.StatusServiceUnavailable)
+
+	// Demotion back to standby is ready again, ready to take over.
+	readiness.SetLeader(false)
+	assertStatus(t, handler, "/readyz", http.StatusOK)
+
+	// Draining withdraws readiness regardless of role.
+	readiness.SetShuttingDown(true)
+	assertStatus(t, handler, "/readyz", http.StatusServiceUnavailable)
+}
+
+func TestStandbyNotReadyUntilDependenciesAndPolicyResolve(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	manager := &policy.Manager{}
+	readiness := NewReadiness(manager)
+	handler := NewHTTPHandler(readiness, NewMetrics(registry), registry)
+
+	// No policy snapshot and no dependencies yet.
+	assertStatus(t, handler, "/readyz", http.StatusServiceUnavailable)
+	readiness.SetDependenciesReady(true)
+	assertStatus(t, handler, "/readyz", http.StatusServiceUnavailable)
+	if err := manager.Reload([]byte(validPolicy)); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(t, handler, "/readyz", http.StatusOK)
+}
+
+func TestExpiredDeleteReasonStaysASeparateBoundedSeries(t *testing.T) {
+	for reason, want := range map[string]string{
+		lifecycle.ReasonRevisionExpired:        "revision-lifecycle-expired",
+		lifecycle.ReasonRevisionExpiredDeleted: "revision-lifecycle-expired:deleted",
+		"scale-down-window:night":              "scale-down-window",
+		"scale-down-skipped:redeploy":          "scale-down-skipped",
+		"scale-down-skipped:replica-override":  "scale-down-skipped",
+		"something-unexpected":                 "other",
+	} {
+		if got := boundedReason(reason); got != want {
+			t.Fatalf("boundedReason(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}
+
+func assertBodyContains(t *testing.T, handler http.Handler, path, want string) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), want) {
+		t.Fatalf("%s body = %s, want it to contain %s", path, response.Body.String(), want)
+	}
+}
+
+func assertGauge(t *testing.T, registry *prometheus.Registry, name string, want float64) {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	family := metricFamily(t, families, name)
+	if len(family.Metric) != 1 || family.Metric[0].Gauge.GetValue() != want {
+		t.Fatalf("%s = %#v, want %v", name, family.Metric, want)
+	}
 }
 func assertStatus(t *testing.T, handler http.Handler, path string, want int) {
 	t.Helper()

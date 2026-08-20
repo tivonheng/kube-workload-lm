@@ -15,7 +15,7 @@ Workload/HPA watches -> controller -> snapshot transaction -> ConfigMap StateSto
 
 The controller watches Deployments, StatefulSets, HPAs, and the policy ConfigMap. Events trigger reconciliation and a 30-second full reconciliation closes watch gaps. Policy matching requires kind plus at least one of label selector or name patterns; the unique highest-priority policy wins. A tie at the highest priority is rejected without state or scale mutation. Invalid policy updates are rejected atomically and the last valid policy snapshot remains active.
 
-Only the elected leader reconciles. Every replica serves HTTP, but `/readyz` succeeds only when that replica is the leader, an initial valid policy exists, and state dependencies loaded successfully.
+Only the elected leader reconciles. Every replica serves HTTP and reports ready once an initial valid policy exists and state dependencies loaded successfully; a standby replica is ready so it can take over the moment the Lease is released. The leader additionally requires its reconcile loop to be running. Readiness deliberately does not require leadership, because gating it on leadership deadlocks rolling updates. Use the `leader` metric to identify the active replica.
 
 ## Revision semantics
 
@@ -176,10 +176,10 @@ The binary accepts no command-line flags. Configuration changes must keep the De
 The HTTP Service exposes port 8080:
 
 - `/healthz`: process/HTTP liveness; returns 200 while serving.
-- `/readyz`: leader and dependency readiness; returns 200 only on the active leader.
+- `/readyz`: dependency readiness; returns 200 on any replica whose policy snapshot and state dependencies are usable, and on the leader only while its reconcile loop runs. The JSON body reports `"role":"leader"` or `"role":"standby"`. Returns 503 while draining.
 - `/metrics`: Prometheus text endpoint.
 
-Metrics use the `workload_lifecycle_controller_` prefix: `reconciliations_total`, `decisions_total`, `errors_total`, `policy_reloads_total`, `policy_ready`, `ready`, `state_store_bytes`, `state_store_near_limit`, and `state_store_exceeded`. Labels are bounded and never include individual Workload names. Logs are JSON and include workload identity, selected policy, bounded reason, result, desired replicas, and error details where applicable.
+Metrics use the `workload_lifecycle_controller_` prefix: `reconciliations_total`, `decisions_total`, `errors_total`, `policy_reloads_total`, `policy_ready`, `ready`, `leader`, `state_store_bytes`, `state_store_near_limit`, and `state_store_exceeded`. `leader` is 1 on exactly the replica holding the Lease. `policy_reloads_total{result="reload-rejected"}` is the signal that a policy update was refused and the previous snapshot is still in effect — worth alerting on, since the controller keeps reconciling with stale policy. Labels are bounded and never include individual Workload names. Logs are JSON and include workload identity, selected policy, bounded reason, result, desired replicas, and error details where applicable.
 
 Leader election uses Lease `lifecycle-system/workload-lifecycle-controller` with a 15-second lease, 10-second renew deadline, and 2-second retry period. SIGTERM/SIGINT cancels reconciliation, releases leadership, and allows up to 10 seconds for graceful HTTP/controller shutdown; the manifest grants 30 seconds.
 ## Security and RBAC
@@ -200,7 +200,7 @@ Cluster RBAC permits `get/list/watch/delete` on Deployments and StatefulSets, `g
 
 State is stored in `lifecycle-system/workload-lifecycle-state`, key `states.json`, as a strict document with `formatVersion: 1`. Invalid or unsupported state is never treated as empty. The single-ConfigMap store warns at 80% of Kubernetes' 1 MiB data limit and rejects writes beyond the limit; states with active snapshots are retained.
 
-Before an upgrade, back up the state and policy ConfigMaps, check release compatibility with state format 1, render manifests, and use an immutable image digest. Roll one compatible replica into leadership, verify `/readyz`, logs, state-capacity metrics, and a no-op reconciliation, then finish the rollout. Do not downgrade to a binary that cannot read the current format. Do not delete or hand-reset state to force an upgrade: active snapshots are required for safe restoration.
+Before an upgrade, back up the state and policy ConfigMaps, check release compatibility with state format 1, render manifests, and use an immutable image digest. Roll one compatible replica into leadership, verify `/readyz`, the `leader` metric, logs, state-capacity metrics, and a no-op reconciliation, then finish the rollout. Confirm `policy_reloads_total{result="reload-rejected"}` is not increasing, which would mean the running binary rejects the deployed policy and is silently using an older snapshot. Do not downgrade to a binary that cannot read the current format. Do not delete or hand-reset state to force an upgrade: active snapshots are required for safe restoration.
 
 ## Troubleshooting
 

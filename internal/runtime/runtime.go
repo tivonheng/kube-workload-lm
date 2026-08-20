@@ -31,6 +31,8 @@ type HTTPServer interface {
 
 type Readiness interface {
 	SetControllerRunning(bool)
+	SetLeader(bool)
+	SetShuttingDown(bool)
 }
 
 type LeaderCallbacks struct {
@@ -80,6 +82,8 @@ func NewCoordinator(elector LeaderElector, server HTTPServer, runner Runner, rea
 // have stopped or the bounded shutdown deadline expires.
 func (coordinator *Coordinator) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
+	coordinator.readiness.SetShuttingDown(false)
+	coordinator.readiness.SetLeader(false)
 	coordinator.readiness.SetControllerRunning(false)
 	serverResult := make(chan error, 1)
 	electionResult := make(chan error, 1)
@@ -96,9 +100,11 @@ func (coordinator *Coordinator) Run(ctx context.Context) error {
 				return
 			}
 			leaderStarted.Store(true)
+			coordinator.readiness.SetLeader(true)
 			coordinator.readiness.SetControllerRunning(true)
 			err := coordinator.runner.Run(leaderCtx)
 			coordinator.readiness.SetControllerRunning(false)
+			coordinator.readiness.SetLeader(false)
 			if leaderCtx.Err() != nil && runCtx.Err() == nil && !shuttingDown.Load() {
 				lost.Store(true)
 				select {
@@ -110,6 +116,7 @@ func (coordinator *Coordinator) Run(ctx context.Context) error {
 		},
 		OnStoppedLeading: func() {
 			coordinator.readiness.SetControllerRunning(false)
+			coordinator.readiness.SetLeader(false)
 			if ctx.Err() == nil && !shuttingDown.Load() {
 				lost.Store(true)
 				select {
@@ -164,7 +171,11 @@ func (coordinator *Coordinator) Run(ctx context.Context) error {
 
 	shuttingDown.Store(true)
 	cancel()
+	// Stop advertising readiness before the listener closes so the endpoint is
+	// withdrawn while the process is still able to answer probes.
+	coordinator.readiness.SetShuttingDown(true)
 	coordinator.readiness.SetControllerRunning(false)
+	coordinator.readiness.SetLeader(false)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), coordinator.shutdownTimeout)
 	defer shutdownCancel()
 	shutdownResult := make(chan error, 1)

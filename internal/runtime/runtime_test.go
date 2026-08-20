@@ -73,10 +73,22 @@ func (runner *fakeRunner) Run(ctx context.Context) error {
 	return nil
 }
 
-type fakeReadiness struct{ running atomic.Bool }
+type fakeReadiness struct {
+	running      atomic.Bool
+	leader       atomic.Bool
+	shuttingDown atomic.Bool
+}
 
 func (readiness *fakeReadiness) SetControllerRunning(running bool) {
 	readiness.running.Store(running)
+}
+
+func (readiness *fakeReadiness) SetLeader(leader bool) {
+	readiness.leader.Store(leader)
+}
+
+func (readiness *fakeReadiness) SetShuttingDown(down bool) {
+	readiness.shuttingDown.Store(down)
 }
 
 func startCoordinator(t *testing.T) (context.CancelFunc, <-chan error, *fakeElector, *fakeServer, *fakeRunner, *fakeReadiness) {
@@ -117,7 +129,7 @@ func receiveResult(t *testing.T, result <-chan error) error {
 	}
 }
 
-func TestNonLeaderServesLivenessButRemainsNotReady(t *testing.T) {
+func TestNonLeaderServesProbesWithoutRunningController(t *testing.T) {
 	cancel, result, elector, server, runner, readiness := startCoordinator(t)
 	_ = receiveCallbacks(t, elector)
 	<-server.started
@@ -128,6 +140,12 @@ func TestNonLeaderServesLivenessButRemainsNotReady(t *testing.T) {
 	}
 	if readiness.running.Load() {
 		t.Fatal("non-leader reported controller running")
+	}
+	if readiness.leader.Load() {
+		t.Fatal("non-leader reported leadership")
+	}
+	if readiness.shuttingDown.Load() {
+		t.Fatal("running standby reported shutting down")
 	}
 	cancel()
 	if err := receiveResult(t, result); err != nil {
@@ -153,14 +171,20 @@ func TestLeadershipAcquisitionRunsControllerAndSignalCancellationStopsEverything
 	if !readiness.running.Load() {
 		t.Fatal("leader did not become ready")
 	}
+	if !readiness.leader.Load() {
+		t.Fatal("leader did not report leadership")
+	}
 	cancel()
 	stopLeader()
 	if err := receiveResult(t, result); err != nil {
 		t.Fatalf("graceful cancellation returned %v", err)
 	}
 	<-runner.stopped
-	if readiness.running.Load() {
+	if readiness.running.Load() || readiness.leader.Load() {
 		t.Fatal("stopped leader remained ready")
+	}
+	if !readiness.shuttingDown.Load() {
+		t.Fatal("shutdown did not withdraw readiness")
 	}
 }
 
@@ -178,6 +202,9 @@ func TestLeadershipLossFailsSafeAndCancelsController(t *testing.T) {
 	<-runner.stopped
 	if readiness.running.Load() {
 		t.Fatal("leadership loss left readiness true")
+	}
+	if readiness.leader.Load() {
+		t.Fatal("leadership loss left the leader flag set")
 	}
 	select {
 	case <-server.stopped:
