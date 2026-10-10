@@ -764,3 +764,106 @@ func TestExpiredWithScalePolicyDoesNotCallDeleter(t *testing.T) {
 		t.Fatal("deleter.Delete should not be called when expiredAction is scale")
 	}
 }
+
+// withCreatedAt returns a copy of the workload with its Kubernetes creation
+// timestamp set, used to model whether a workload came into existence before or
+// during a down window.
+func withCreatedAt(w workload.Workload, createdAt time.Time) workload.Workload {
+	w.CreatedAt = createdAt
+	return w
+}
+
+// TestNewWorkloadInWindowSkipsScaleDown validates that a workload created during
+// an active down window instance is exempt from scheduled downscaling for that
+// instance: no snapshot is captured, no scale write occurs, and the skip reason
+// is recorded.
+func TestNewWorkloadInWindowSkipsScaleDown(t *testing.T) {
+	// testNow is Monday 2026-08-03 12:00 UTC; the always-on all-day window makes
+	// WindowInstanceStart 2026-08-03 00:00 UTC. CreatedAt after that is "new".
+	current := withCreatedAt(testWorkload("uid-new-in-window", "api:v1"), testNow)
+	reconciler, store, scale, ops := newHarness(t, state.NewDocument(), 5)
+
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicy(true, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != lifecycle.ReasonScaleDownSkippedNewWorkload || decision.ShouldScale || scale.replicas != 5 {
+		t.Fatalf("new-workload decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	persisted := store.document.States[current.Key()]
+	if !persisted.ScaleDownSkipped || persisted.ScaleDownSkipReason != lifecycle.ReasonScaleDownSkippedNewWorkload {
+		t.Fatalf("skip state=%#v", persisted)
+	}
+	if persisted.ReplicaSnapshot != nil {
+		t.Fatalf("new-workload skip captured a snapshot: %#v", persisted.ReplicaSnapshot)
+	}
+	if strings.Contains(strings.Join(*ops, ","), "update:") {
+		t.Fatalf("new-workload skip performed a scale write: %v", *ops)
+	}
+}
+
+// TestPreExistingWorkloadInWindowStillScalesDown validates that a workload that
+// existed before the current window instance started is downscaled normally and
+// is not treated as new.
+func TestPreExistingWorkloadInWindowStillScalesDown(t *testing.T) {
+	// CreatedAt two days before the window instance start -> not new.
+	current := withCreatedAt(testWorkload("uid-pre-existing", "api:v1"), testNow.Add(-48*time.Hour))
+	reconciler, store, scale, _ := newHarness(t, state.NewDocument(), 5)
+
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicy(true, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != lifecycle.ReasonScaleDownWindow+":always" || !decision.ShouldScale || scale.replicas != 0 {
+		t.Fatalf("pre-existing decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	persisted := store.document.States[current.Key()]
+	if persisted.ScaleDownSkipped || persisted.ScaleDownSkipReason != "" {
+		t.Fatalf("pre-existing workload was wrongly skipped: %#v", persisted)
+	}
+	if persisted.ReplicaSnapshot == nil || persisted.ReplicaSnapshot.Replicas != 5 {
+		t.Fatalf("pre-existing downscale did not capture snapshot: %#v", persisted.ReplicaSnapshot)
+	}
+}
+
+// TestNewWorkloadSkipClearsAtNextWindowInstance validates that the new-workload
+// grace period only covers the window instance in which the workload was
+// created. Once a later window instance begins, the workload (now predating that
+// instance's start) is scaled down normally. This matches the agreed semantics:
+// a Saturday-created workload is exempt Saturday, but Sunday's instance resumes
+// downscaling.
+func TestNewWorkloadSkipClearsAtNextWindowInstance(t *testing.T) {
+	current := withCreatedAt(testWorkload("uid-new-then-next", "api:v1"), testNow)
+	reconciler, store, scale, _ := newHarness(t, state.NewDocument(), 5)
+
+	// Day 1: created inside the window instance -> skipped.
+	decision, err := reconciler.Reconcile(context.Background(), current, testPolicy(true, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != lifecycle.ReasonScaleDownSkippedNewWorkload || scale.replicas != 5 {
+		t.Fatalf("day-1 decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	firstInstance := store.document.States[current.Key()].WindowInstanceID
+
+	// Day 2: a new window instance begins 24h later. CreatedAt now predates the
+	// new instance start, so the grace period no longer applies.
+	nextDay, err := NewReconciler(store, scale, noOpDeleter{}, fakeHPA{result: workload.HPAEvaluation{Allowed: true}, ops: &[]string{}}, fixedClock{testNow.Add(24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err = nextDay.Reconcile(context.Background(), current, testPolicy(true, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := store.document.States[current.Key()]
+	if decision.Reason != lifecycle.ReasonScaleDownWindow+":always" || !decision.ShouldScale || scale.replicas != 0 {
+		t.Fatalf("day-2 decision=%#v replicas=%d", decision, scale.replicas)
+	}
+	if resumed.ScaleDownSkipped || resumed.ScaleDownSkipReason != "" {
+		t.Fatalf("skip not cleared at new instance: %#v", resumed)
+	}
+	if resumed.WindowInstanceID == firstInstance {
+		t.Fatalf("window instance did not advance: %q", resumed.WindowInstanceID)
+	}
+}

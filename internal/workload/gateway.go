@@ -264,5 +264,6 @@ func fromPodTemplate(kind Kind, metadata metav1.ObjectMeta, source []corev1.Cont
 		UID:        string(metadata.UID),
 		Labels:     labels,
 		Containers: containers,
+		CreatedAt:  metadata.CreationTimestamp.Time,
 	}
 }

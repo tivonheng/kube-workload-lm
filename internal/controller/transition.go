@@ -86,6 +86,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, current workload.Workload, s
 	}
 	document.States[current.Key()] = currentState
 
+	// 检测"窗口内新建"工作负载：若该 Workload 的 Kubernetes 创建时间
+	// (CreationTimestamp) 落在当前窗口实例开始之后，说明它是在停机窗口期间才
+	// 创建的，对该窗口实例给予宽限，跳过缩容，直到窗口实例结束
+	// (reconcileWindowCycle 会在新周期清除该标记)。使用 CreatedAt 而非控制器的
+	// FirstSeenAt，可避免控制器重启后把老工作负载误判为新建。
+	if scheduledDown && windowName != "" && !currentState.ScaleDownSkipped {
+		isNew, err := r.newInCurrentWindow(now, selected.Schedule, windowName, current.CreatedAt)
+		if err != nil {
+			return lifecycle.Decision{}, fmt.Errorf("evaluate window start for %s: %w", current.Key(), err)
+		}
+		if isNew {
+			currentState.ScaleDownSkipped = true
+			currentState.ScaleDownSkipReason = lifecycle.ReasonScaleDownSkippedNewWorkload
+			document.States[current.Key()] = currentState
+			if err := r.save(ctx, document, current.Key(), "mark scale-down-skipped:new-workload"); err != nil {
+				return lifecycle.Decision{}, err
+			}
+		}
+	}
+
 	// 检测窗口内 Revision 变化
 	if scheduledDown && !currentState.ScaleDownSkipped && currentState.WindowEntryRevision != "" && currentState.WindowEntryRevision != revision.RevisionHash {
 		currentState, err = r.handleRedeployDuringWindow(ctx, document, currentState, live, current.Key())
@@ -178,6 +198,23 @@ func computeWindowInstanceID(now time.Time, configured *policy.Schedule, windowN
 		return "", nil
 	}
 	return schedule.WindowInstanceID(now, configured.TimeZone, windowName, configured.DownWindows)
+}
+
+// newInCurrentWindow reports whether a workload was created during the
+// currently-active window instance. A workload whose Kubernetes creation
+// timestamp is at or after the window instance start came into existence inside
+// the down window and is granted a grace period: it is not scaled down for this
+// window instance. A zero createdAt (unknown) is treated as not-new to preserve
+// existing downscale behavior.
+func (r *Reconciler) newInCurrentWindow(now time.Time, configured *policy.Schedule, windowName string, createdAt time.Time) (bool, error) {
+	if configured == nil || createdAt.IsZero() {
+		return false, nil
+	}
+	start, err := schedule.WindowInstanceStart(now, configured.TimeZone, windowName, configured.DownWindows)
+	if err != nil {
+		return false, err
+	}
+	return !createdAt.Before(start), nil
 }
 
 // reconcileWindowCycle 处理窗口周期边界。

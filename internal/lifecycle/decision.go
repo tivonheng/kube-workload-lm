@@ -7,6 +7,7 @@ const (
 	ReasonRevisionExpiredDeleted          = "revision-lifecycle-expired:deleted"
 	ReasonScaleDownSkipped                = "scale-down-skipped:redeploy"
 	ReasonScaleDownSkippedReplicaOverride = "scale-down-skipped:replica-override"
+	ReasonScaleDownSkippedNewWorkload     = "scale-down-skipped:new-workload"
 	ReasonScaleDownWindow                 = "scale-down-window"
 	ReasonRestoreReplicas                 = "restore-previous-replicas"
 	ReasonActiveWindow                    = "active-window"

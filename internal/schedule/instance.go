@@ -59,3 +59,60 @@ func WindowInstanceID(now time.Time, timezone string, windowName string, windows
 	id := fmt.Sprintf("%s:%s", windowName, startDate.Format("2006-01-02"))
 	return id, nil
 }
+
+// WindowInstanceStart returns the wall-clock start instant of the window
+// instance that is active at now, expressed in UTC. It mirrors the cycle
+// boundary used by WindowInstanceID so callers can compare a persisted
+// timestamp (such as FirstSeenAt) against the moment this window instance
+// began.
+//
+// For allDay windows the start is 00:00 local on the start date. For
+// time-range windows it is the configured start minute on the start date,
+// where the start date accounts for cross-midnight windows exactly as
+// WindowInstanceID does.
+func WindowInstanceStart(now time.Time, timezone string, windowName string, windows []Window) (time.Time, error) {
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("load timezone %q: %w", timezone, err)
+	}
+
+	var window *Window
+	for i := range windows {
+		if windows[i].Name == windowName {
+			window = &windows[i]
+			break
+		}
+	}
+	if window == nil {
+		return time.Time{}, fmt.Errorf("window %q not found", windowName)
+	}
+
+	local := now.In(location)
+	startDate := local
+	startMinute := 0
+
+	if !window.AllDay {
+		start, err := parseMinute(window.Start)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("window %q invalid start: %w", windowName, err)
+		}
+		end, err := parseMinute(window.End)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("window %q invalid end: %w", windowName, err)
+		}
+		startMinute = start
+
+		// Cross-midnight window: start >= end
+		if start >= end {
+			minute := local.Hour()*60 + local.Minute()
+			if minute < end {
+				// We're in the early morning portion — window started yesterday.
+				startDate = local.AddDate(0, 0, -1)
+			}
+		}
+	}
+
+	startLocal := time.Date(startDate.Year(), startDate.Month(), startDate.Day(),
+		startMinute/60, startMinute%60, 0, 0, location)
+	return startLocal.UTC(), nil
+}
