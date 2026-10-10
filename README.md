@@ -73,6 +73,8 @@ make image-multiarch-push \
 
 `CONTAINER_ENGINE`, `GO_VERSION`, `VERSION`, `REGISTRY`, `IMAGE_NAME`, `IMG`, `PLATFORM`, `PLATFORMS`, and `MULTIARCH_IMG` are explicit Make variables. The default engine is Podman and the default multi-architecture set is `linux/amd64,linux/arm64`. `image-multiarch` creates only a local manifest; only the targets whose names end in `-push` publish. Building and inspecting a foreign-architecture image is distinct from running it: runtime execution may require emulation configured in the Podman machine, but this controller's static cross-build and manifest validation do not require a successful foreign-architecture runtime smoke test.
 
+**Publishing to ECR:** For the exact, verified build-and-push procedure to the `osl-pay-test` ECR registry (account `557690602572`, region `eu-central-1`, `aws-vault` profile `osl-pay-test-admin`, git-SHA tagging), see [docs/release-ecr.md](docs/release-ecr.md).
+
 ## Deploy and remove
 
 Review `config/base/policy-configmap.yaml` before deployment. The base installs namespace-scoped policy/state/Lease access, cluster-wide read/watch access for supported Workloads and HPAs, scale-only writes, the Service, and two controller replicas.
